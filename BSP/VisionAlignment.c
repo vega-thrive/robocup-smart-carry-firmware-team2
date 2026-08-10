@@ -30,6 +30,13 @@ static uint32_t align_pulse_until_ms;
 static uint32_t align_settle_until_ms;
 static uint32_t align_finish_at_ms;
 
+volatile uint8_t  vision_diag_code;
+volatile uint8_t  vision_diag_mode;
+volatile uint8_t  vision_diag_x;
+volatile uint8_t  vision_diag_y;
+volatile uint32_t vision_diag_seq;
+volatile uint32_t vision_diag_age_ms;
+
 static uint8_t VisionAlignment_Median3(const uint8_t value[3])
 {
     uint8_t a = value[0];
@@ -100,19 +107,21 @@ void VisionAlignment_Process(void)
     MaxiCam_Frame frame;
     uint32_t now;
 
-    if (align_status != VISION_ALIGN_RUNNING) return;
+    if (align_status != VISION_ALIGN_RUNNING) { vision_diag_code = VISION_DIAG_IDLE; return; }
     now = HAL_GetTick();
 
     if ((now - align_started_ms) >= ALIGN_TIMEOUT_MS)
     {
         VisionAlignment_SetTarget(0, 0);
         align_status = VISION_ALIGN_TIMEOUT;
+        vision_diag_code = VISION_DIAG_TIMEOUT;
         return;
     }
 
     if (align_finish_at_ms != 0U)
     {
         VisionAlignment_SetTarget(0, 0);
+        vision_diag_code = VISION_DIAG_CENTERED;
         if ((int32_t)(now - align_finish_at_ms) >= 0)
             align_status = VISION_ALIGN_DONE;
         return;
@@ -120,7 +129,7 @@ void VisionAlignment_Process(void)
 
     if (align_pulse_until_ms != 0U)
     {
-        if ((int32_t)(now - align_pulse_until_ms) < 0) return;
+        if ((int32_t)(now - align_pulse_until_ms) < 0) { vision_diag_code = VISION_DIAG_MOVING; return; }
         VisionAlignment_SetTarget(0, 0);
         align_pulse_until_ms = 0U;
         align_settle_until_ms = now + ALIGN_FINE_SETTLE_MS;
@@ -129,6 +138,7 @@ void VisionAlignment_Process(void)
     if (align_settle_until_ms != 0U)
     {
         VisionAlignment_SetTarget(0, 0);
+        vision_diag_code = VISION_DIAG_MOVING;
         if ((int32_t)(now - align_settle_until_ms) < 0) return;
         align_settle_until_ms = 0U;
     }
@@ -136,6 +146,7 @@ void VisionAlignment_Process(void)
     if (!MaxiCam_GetLatest(&frame, ALIGN_FRAME_MAX_AGE))
     {
         VisionAlignment_SetTarget(0, 0);
+        vision_diag_code = VISION_DIAG_NO_FRAME;
         if ((int32_t)(now - align_next_command_ms) >= 0)
         {
             (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
@@ -145,10 +156,17 @@ void VisionAlignment_Process(void)
         return;
     }
 
+    vision_diag_mode = frame.data[0];
+    vision_diag_x    = frame.data[2];
+    vision_diag_y    = frame.data[3];
+    vision_diag_seq  = frame.sequence;
+    vision_diag_age_ms = now - frame.received_at_ms;
+
     if ((frame.data[0] != 1U) ||
         (frame.data[2] >= 160U) || (frame.data[3] >= 120U))
     {
         VisionAlignment_SetTarget(0, 0);
+        vision_diag_code = (frame.data[0] != 1U) ? VISION_DIAG_BAD_MODE : VISION_DIAG_BAD_XY;
         return;
     }
 
@@ -194,12 +212,14 @@ void VisionAlignment_Process(void)
             (abs_y <= ALIGN_ENTER_BAND))
         {
             VisionAlignment_SetTarget(0, 0);
+            vision_diag_code = VISION_DIAG_CENTERED;
             align_pulse_until_ms = 0U;
             align_settle_until_ms = 0U;
             align_finish_at_ms = now + ALIGN_FINISH_HOLD_MS;
         }
         else
         {
+            vision_diag_code = VISION_DIAG_MOVING;
             int movement;
             int movement_sign;
 

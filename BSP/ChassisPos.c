@@ -18,6 +18,8 @@ static uint16_t pos_stall_grace;
 volatile int debug_trap_speed;
 volatile int debug_trap_position;
 volatile int debug_trap_error;
+volatile int debug_trap_left_position;
+volatile int debug_trap_left_error;
 
 static int AbsInt(int value)
 {
@@ -108,6 +110,8 @@ uint8_t ChassisPos_Update(int max_fwd, int max_left, int hc)
     debug_trap_error    = TrapMove_GetError(&trap_fwd);
     error_forward = debug_trap_error;
     error_left    = TrapMove_GetError(&trap_left);
+    debug_trap_left_position = trap_left.position;
+    debug_trap_left_error    = error_left;
 
     if (hc > POS_HEADING_CORR_LIMIT) hc = POS_HEADING_CORR_LIMIT;
     if (hc < -POS_HEADING_CORR_LIMIT) hc = -POS_HEADING_CORR_LIMIT;

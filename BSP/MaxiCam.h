@@ -25,4 +25,9 @@ void MaxiCam_OnRxComplete(UART_HandleTypeDef *uart);
 void MaxiCam_OnUartError(void);
 uint8_t MaxiCam_GetLatest(MaxiCam_Frame *frame, uint32_t max_age_ms);
 
+/* 串口诊断计数器: 定位 NO FRAME 根因 */
+extern volatile uint32_t maxicam_diag_rx_bytes;
+extern volatile uint32_t maxicam_diag_headers;
+extern volatile uint32_t maxicam_diag_packets;
+
 #endif

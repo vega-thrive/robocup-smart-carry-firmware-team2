@@ -70,6 +70,7 @@ void SystemClock_Config(void);
 #include "CompetitionTask.h"
 #include "ProjectService.h"
 #include "Servo4.h"
+#include "Task1Mechanism.h"
 #include "MaxiCam.h"
 #include "Sensor.h"
 
@@ -96,7 +97,116 @@ int main(void)
     LCD_FillScreen(LCD_BLACK);
     HAL_Delay(1000);
 
-#if SERVO_RANGE_TEST_MODE
+#if CIRCLE_UART_TEST_MODE
+    MaxiCam_Frame circle_frame;
+    HAL_StatusTypeDef circle_rx_status;
+    uint32_t circle_next_command_ms;
+    char circle_text[40];
+
+    /* Dedicated receive-only diagnostics. Do not initialize servos, chassis,
+     * encoders, line following, IMU or the competition state machine. */
+    MaxiCam_Init(&huart4);
+    circle_rx_status = MaxiCam_StartReceiveIT();
+
+    LCD_DrawString_NoDMA(1, 10, "CIRCLE UART RX TEST",
+                         LCD_WHITE, LCD_BLACK);
+    LCD_DrawString_NoDMA(1, 40,
+                         (circle_rx_status == HAL_OK) ? "RX IT: OK" : "RX IT: ERROR",
+                         (circle_rx_status == HAL_OK) ? LCD_GREEN : LCD_RED,
+                         LCD_BLACK);
+    LCD_DrawString_NoDMA(1, 70, "CAMERA BOOT 3S",
+                         LCD_GREEN, LCD_BLACK);
+    LCD_DrawString_NoDMA(1, 220, "MOTOR/SERVO DISABLED",
+                         LCD_RED, LCD_BLACK);
+
+    HAL_Delay(3000U);
+    (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
+    HAL_Delay(100U);
+    (void)MaxiCam_SetMode(MAXICAM_MODE_CIRCLE);
+    circle_next_command_ms = HAL_GetTick() + 1000U;
+
+    while (1)
+    {
+        uint32_t now = HAL_GetTick();
+
+        if (MaxiCam_GetLatest(&circle_frame, 1000U))
+        {
+            uint32_t age = now - circle_frame.received_at_ms;
+
+            (void)sprintf(circle_text, "M:%u S:%u X:%u Y:%u       ",
+                          (unsigned int)circle_frame.data[0],
+                          (unsigned int)circle_frame.data[1],
+                          (unsigned int)circle_frame.data[2],
+                          (unsigned int)circle_frame.data[3]);
+            LCD_DrawString_NoDMA(1, 70, circle_text, LCD_WHITE, LCD_BLACK);
+
+            (void)sprintf(circle_text, "SEQ:%lu AGE:%lums         ",
+                          (unsigned long)circle_frame.sequence,
+                          (unsigned long)age);
+            LCD_DrawString_NoDMA(1, 100, circle_text, LCD_GREEN, LCD_BLACK);
+
+            (void)sprintf(circle_text, "D4:%u D5:%u               ",
+                          (unsigned int)circle_frame.data[4],
+                          (unsigned int)circle_frame.data[5]);
+            LCD_DrawString_NoDMA(1, 130, circle_text, LCD_WHITE, LCD_BLACK);
+
+            if (circle_frame.data[0] != 1U)
+            {
+                LCD_DrawString_NoDMA(1, 160, "BAD MODE                  ",
+                                     LCD_RED, LCD_BLACK);
+            }
+            else if ((circle_frame.data[2] >= 160U) ||
+                     (circle_frame.data[3] >= 120U))
+            {
+                LCD_DrawString_NoDMA(1, 160, "BAD XY                    ",
+                                     LCD_RED, LCD_BLACK);
+            }
+            else
+            {
+                LCD_DrawString_NoDMA(1, 160, "PACKET + XY OK            ",
+                                     LCD_GREEN, LCD_BLACK);
+            }
+
+            if ((circle_frame.data[2] >= 75U) &&
+                (circle_frame.data[2] <= 85U) &&
+                (circle_frame.data[3] >= 55U) &&
+                (circle_frame.data[3] <= 65U))
+            {
+                LCD_DrawString_NoDMA(1, 190, "NEAR CENTER (80,60)       ",
+                                     LCD_GREEN, LCD_BLACK);
+            }
+            else
+            {
+                LCD_DrawString_NoDMA(1, 190, "MOVE TARGET TO CENTER     ",
+                                     LCD_WHITE, LCD_BLACK);
+            }
+        }
+        else
+        {
+            LCD_DrawString_NoDMA(1, 70, "M:- S:- X:- Y:-           ",
+                                 LCD_WHITE, LCD_BLACK);
+            LCD_DrawString_NoDMA(1, 100, "SEQ:0 / FRAME STALE       ",
+                                 LCD_RED, LCD_BLACK);
+            LCD_DrawString_NoDMA(1, 130, "WAIT FF AA ... FE BB      ",
+                                 LCD_WHITE, LCD_BLACK);
+            LCD_DrawString_NoDMA(1, 160, "NO VALID PACKET           ",
+                                 LCD_RED, LCD_BLACK);
+            LCD_DrawString_NoDMA(1, 190, "CHECK CAMERA TX -> PC11   ",
+                                 LCD_WHITE, LCD_BLACK);
+
+            /* Retry the mode command only while no fresh packet is available. */
+            if ((int32_t)(now - circle_next_command_ms) >= 0)
+            {
+                (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
+                HAL_Delay(20U);
+                (void)MaxiCam_SetMode(MAXICAM_MODE_CIRCLE);
+                circle_next_command_ms = HAL_GetTick() + 1000U;
+            }
+        }
+
+        HAL_Delay(50U);
+    }
+#elif SERVO_RANGE_TEST_MODE
     static const uint16_t range_test_pulse[] =
     {
         1500U, 1750U, 2000U, 2250U, 2500U,
@@ -238,6 +348,50 @@ int main(void)
         Servo4_SetPulse(2U, SERVO_TEST_LOW_US);
         HAL_Delay(10);
     }
+#elif ENCODER_ROUTE_TEST_MODE
+    /* 编码器定距专项测试: 从 ROTATE_90 开始, 跑完所有编码器运动段
+     * 到 FINAL_LEFT_40 停车. 跳过视觉对准/扫码/颜色识别/巡线,
+     * 摄像头在充电时可用. */
+    Servo4_Init();
+    ChassisMotor_Init(0.62f, 0.06f, 0.00f);
+    LineFollow_Init();
+    HWT101_UART_Init();
+    HeadingHold_Init();
+    HWT101_getAngle_Reset();
+    HeadingHold_Reset();
+    ChassisPos_ResetEncoder();
+    ChassisPos_ResetVelocityPid();
+
+    LCD_DrawString_NoDMA(1, 40, "ENCODER ROUTE TEST",
+                         LCD_WHITE, LCD_BLACK);
+    LCD_DrawString_NoDMA(1, 80, "ROTATE90->FINAL LEFT40",
+                         LCD_GREEN, LCD_BLACK);
+    LCD_DrawString_NoDMA(1, 120, "VISION SKIP ON",
+                         LCD_GREEN, LCD_BLACK);
+    LCD_DrawString_NoDMA(1, 160, "Press BTN to Start",
+                         LCD_WHITE, LCD_BLACK);
+
+    while (HAL_GPIO_ReadPin(START_BTN_GPIO_Port, START_BTN_Pin) != GPIO_PIN_RESET)
+    {
+        HAL_Delay(10);
+    }
+    HAL_Delay(50);
+    LCD_FillScreen(LCD_BLACK);
+
+    /* 等待陀螺仪稳定后记录初始航向 (供 FINAL_ROTATE_ALIGN 回中用) */
+    HAL_Delay(200);
+    ProjectService_SetInitialHeading();
+    ProjectService_SetRouteState(ROUTE_ROTATE_90);
+    ProjectService_SetVisionSkip(1U);
+    ChassisPos_DrawStatus(1, "Rotate 90");
+
+    HAL_TIM_Base_Start_IT(&htim7);
+
+    while (1)
+    {
+        ProjectService_Run();
+        HAL_Delay(10);
+    }
 #else
     /* Init Servo (TIM9 software PWM) */
     Servo4_Init();
@@ -245,6 +399,20 @@ int main(void)
     /* Init Motor & Encoder */
     ChassisMotor_Init(0.62f, 0.06f, 0.00f);
 
+#if HARDWARE_DEBUG_MODE
+    /* 硬件调试: 上电直接舒展舵机, 不跑路线, 不等按键 */
+    {
+        const Task1ArmPose *pose = Task1Mechanism_GetWorkingPose();
+        Servo4_SetPulse(0U, pose->big_arm_us);
+        Servo4_SetPulse(1U, pose->small_arm_us);
+        Servo4_LittleAllOpen();   /* CH3~CH7 小爪子张开 */
+    }
+    LCD_DrawString_NoDMA(1, 120, "HW DEBUG", LCD_WHITE, LCD_BLACK);
+    while (1)
+    {
+        HAL_Delay(10);
+    }
+#else
     /* Wait for START_BTN (PG10, active-low) press before running */
     LCD_DrawString_NoDMA(1, 120, "Press BTN to Start", LCD_WHITE, LCD_BLACK);
     while (HAL_GPIO_ReadPin(START_BTN_GPIO_Port, START_BTN_Pin) != GPIO_PIN_RESET)
@@ -261,6 +429,7 @@ int main(void)
         CompetitionTask_Process();
         HAL_Delay(10);
     }
+#endif
 #endif
 }
 /**

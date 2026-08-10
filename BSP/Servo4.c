@@ -94,9 +94,10 @@ void Servo4_Init(void)
     TIM9->DIER = TIM_DIER_UIE;
     servo4_elapsed_us = 0U;
     servo4_frame_start = 1U;
-    /* 优先级 2: 让 TIM7(1) 电机控制可抢占舵机 ISR, 排查"电机+舵机不可运行".
-     * 舵机边沿被挤占几十us 无影响; 若无效改回 0 即可. */
-    HAL_NVIC_SetPriority(TIM1_BRK_TIM9_IRQn, 2U, 0U);
+    /* 优先级 0 (最高): 软件 PWM 边沿绝不能被抢占, 否则脉宽漂移导致舵机
+     * 异常转动(巡线时小臂抬升/砸下). TIM9 ISR 仅 ~30us, 抢占 TIM7 电机
+     * 控制每 5ms 最多 30us, 不影响. */
+    HAL_NVIC_SetPriority(TIM1_BRK_TIM9_IRQn, 0U, 0U);
     HAL_NVIC_EnableIRQ(TIM1_BRK_TIM9_IRQn);
     TIM9->CR1 = TIM_CR1_CEN;
 }

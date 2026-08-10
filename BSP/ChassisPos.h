@@ -8,7 +8,7 @@
 #define POS_VEL_THRESHOLD          25
 #define POS_DEBOUNCE_TICKS         15
 #define POS_MIN_SPEED              35
-#define POS_HEADING_CORR_LIMIT      80
+#define POS_HEADING_CORR_LIMIT      120
 #define POS_HEADING_DONE_LIMIT      25
 #define POS_ENCODER_TICK_LIMIT    1600
 #define POS_BAD_SAMPLE_LIMIT         3
@@ -20,6 +20,8 @@ extern uint8_t pos_fault;
 extern volatile int debug_trap_speed;
 extern volatile int debug_trap_position;
 extern volatile int debug_trap_error;
+extern volatile int debug_trap_left_position;
+extern volatile int debug_trap_left_error;
 
 void     ChassisPos_Init(void);
 void     ChassisPos_Start(int t1, int t2, int t3, int t4);

@@ -7,6 +7,10 @@ static uint8_t maxicam_index;
 static uint8_t maxicam_rx_byte;
 static volatile MaxiCam_Frame maxicam_latest;
 
+volatile uint32_t maxicam_diag_rx_bytes;
+volatile uint32_t maxicam_diag_headers;
+volatile uint32_t maxicam_diag_packets;
+
 static void MaxiCam_OnRxByte(uint8_t byte);
 
 void MaxiCam_Init(UART_HandleTypeDef *uart)
@@ -31,6 +35,8 @@ HAL_StatusTypeDef MaxiCam_SetMode(MaxiCam_Mode mode)
 
 static void MaxiCam_OnRxByte(uint8_t byte)
 {
+    maxicam_diag_rx_bytes++;
+
     if (maxicam_index == 0U)
     {
         if (byte == 0xFFU) maxicam_buffer[maxicam_index++] = byte;
@@ -41,6 +47,7 @@ static void MaxiCam_OnRxByte(uint8_t byte)
         if (byte == 0xAAU)
         {
             maxicam_buffer[maxicam_index++] = byte;
+            maxicam_diag_headers++;
         }
         else
         {
@@ -58,6 +65,7 @@ static void MaxiCam_OnRxByte(uint8_t byte)
             memcpy((void *)maxicam_latest.data, &maxicam_buffer[2], 6U);
             maxicam_latest.received_at_ms = HAL_GetTick();
             maxicam_latest.sequence++;
+            maxicam_diag_packets++;
         }
         maxicam_index = 0U;
     }

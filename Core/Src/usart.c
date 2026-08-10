@@ -228,7 +228,9 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
     GPIO_InitStruct.Alternate = GPIO_AF8_UART4;
     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-    HAL_NVIC_SetPriority(UART4_IRQn, 2, 0);
+    /* UART4 优先级降到 3, 低于 TIM9(0): 摄像头字节中断不得延迟舵机 PWM 边沿,
+     * 否则巡线时连续收帧会让大臂/小臂舵机信号畸变失力("敲、砸下去"). */
+    HAL_NVIC_SetPriority(UART4_IRQn, 3, 0);
     HAL_NVIC_EnableIRQ(UART4_IRQn);
 
   /* USER CODE BEGIN UART4_MspInit 1 */

@@ -19,7 +19,7 @@
 #define SERVO4_MAX_US      2500U
 
 /* 小舵机 CH3~CH7 开合角度 (反向: 890us=开, 2000us=合) */
-#define LITTLE_SERVO_OPEN_US  1000U
+#define LITTLE_SERVO_OPEN_US  1600U
 #define LITTLE_SERVO_CLOSE_US 2000U
 
 /* ---- 底层驱动 ---- */
