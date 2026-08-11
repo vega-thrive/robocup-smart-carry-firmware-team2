@@ -2,6 +2,7 @@
 #define __TEST_MODE_H__
 
 /* Exactly one dedicated test mode should normally be enabled at a time. */
+#define ARM_SERVO_TEST_MODE     0   /* 大臂小臂专项测试: 上电仅CH0/CH1缓降至 FLAT */
 #define CIRCLE_UART_TEST_MODE   0   /* LCD + UART4 + MaxiCam only */
 #define SERVO_RANGE_TEST_MODE   0
 #define COLOR_SERVO_TEST_MODE   0

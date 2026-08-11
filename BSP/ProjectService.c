@@ -5,6 +5,7 @@
 #include "ChassisMotor.h"
 #include "CompetitionQr.h"
 #include "Servo4.h"
+#include "Task1Mechanism.h"
 #include "VisionAlignment.h"
 #include "TurntableInventory.h"
 #include "MaxiCam.h"
@@ -117,7 +118,25 @@ void ProjectService_Init(void)
     task1_route_test_done = 0U;
     place_seq_index = 0;
     TurntableInventory_Init(840U, 400U);
-    Servo4_UseTask1Parameters();
+    /* 从竖直向上安全位缓慢降至平地工作姿态, 避免上电猛砸. */
+    {
+        const Task1ArmPose *safe = Task1Mechanism_GetSafeStartPose();
+        const Task1ArmPose *tgt  = Task1Mechanism_GetWorkingPose();
+        uint16_t cur0 = safe->big_arm_us, cur1 = safe->small_arm_us;
+        uint16_t tgt0 = tgt->big_arm_us, tgt1 = tgt->small_arm_us;
+        uint8_t done = 0U;
+        while (!done)
+        {
+            done = 1U;
+            if (cur0 < tgt0) { cur0 += 5U; if (cur0 > tgt0) cur0 = tgt0; done = 0U; }
+            else if (cur0 > tgt0) { cur0 -= 5U; if (cur0 < tgt0) cur0 = tgt0; done = 0U; }
+            if (cur1 < tgt1) { cur1 += 5U; if (cur1 > tgt1) cur1 = tgt1; done = 0U; }
+            else if (cur1 > tgt1) { cur1 -= 5U; if (cur1 < tgt1) cur1 = tgt1; done = 0U; }
+            Servo4_SetPulse(0U, cur0);
+            Servo4_SetPulse(1U, cur1);
+            HAL_Delay(15U);
+        }
+    }
     /* 上电先退掉摄像头可能残留的模式循环(0x04), 再启动颜色识别 */
     (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
     Task1Color_Start();
@@ -1371,7 +1390,7 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                 ChassisPos_ResetEncoder();
                 HWT101_getAngle_Reset();
                 HeadingHold_Reset();
-                Servo4_UseTask2Parameters();
+                Servo4_UseTrophyPose(TROPHY_POSE_PODIUM);
                 trophy_phase = 2;
             }
             else

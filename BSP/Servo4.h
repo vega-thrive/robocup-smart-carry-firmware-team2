@@ -2,9 +2,10 @@
 #define __SERVO4_H__
 
 #include "main.h"
+#include "TrophyMechanism.h"
 
 /* ---- 通道定义 ----
- * CH0 / PC2: 大臂舵机 (Task1/Task2 手臂姿态, Servo4_UseTask1/2Parameters)
+ * CH0 / PC2: 大臂舵机 (Task1 平地 | Trophy 三组位姿)
  * CH1 / PC3: 小臂舵机 (同上)
  * CH2 / PA4: 旋转舵机 360° 位置舵机 (转盘, RotationHome/RotationSetStep)
  * CH3 / PA5: 小爪子 1 (LittleAllOpen/LittleAllClose 统控)
@@ -29,9 +30,9 @@ void Servo4_TIM9_IRQHandler(void);
 
 /* ---- 高层舵机控制 ---- */
 
-/* 大臂+小臂：任务1/任务2 姿态 */
+/* 大臂+小臂：任务1 平地 / 任务2 奖杯台位姿 */
 void Servo4_UseTask1Parameters(void);
-void Servo4_UseTask2Parameters(void);
+void Servo4_UseTrophyPose(TrophyPoseType pose);
 
 /* 旋转舵机 CH2 */
 void Servo4_RotationHome(void);

@@ -189,9 +189,9 @@ void Servo4_UseTask1Parameters(void)
     Servo4_SetPulse(1U, pose->small_arm_us);
 }
 
-void Servo4_UseTask2Parameters(void)
+void Servo4_UseTrophyPose(TrophyPoseType type)
 {
-    const TrophyArmPose *pose = TrophyMechanism_GetReadyPose();
+    const TrophyArmPose *pose = TrophyMechanism_GetPose(type);
     Servo4_SetPulse(0U, pose->big_arm_us);
     Servo4_SetPulse(1U, pose->small_arm_us);
 }
