@@ -99,18 +99,14 @@ int main(void)
     HAL_Delay(1000);
 
 #if ARM_SERVO_TEST_MODE
-    /* 大臂+小臂专项测试: 仅初始化舵机, 从安全起始位缓降至 FLAT.
+    /* 大臂+小臂专项测试: 仅初始化舵机, 从 Task0 缓降至 FLAT.
      * 底盘、编码器、巡线、IMU、摄像头均不启动. */
-    uint16_t cur_ch0, cur_ch1;
-    uint16_t tgt_ch0, tgt_ch1;
     Servo4_Init();
     {
-        const Task1ArmPose *safe = Task1Mechanism_GetSafeStartPose();
+        const Task1ArmPose *t0 = Task1Mechanism_GetTask0Pose();
         const Task1ArmPose *work = Task1Mechanism_GetWorkingPose();
-        cur_ch0 = safe->big_arm_us;
-        cur_ch1 = safe->small_arm_us;
-        tgt_ch0 = work->big_arm_us;
-        tgt_ch1 = work->small_arm_us;
+        Servo4_SetPulse(0U, t0->big_arm_us);
+        Servo4_SetPulse(1U, t0->small_arm_us);
 
         LCD_DrawString_NoDMA(1, 10, "ARM SERVO TEST", LCD_WHITE, LCD_BLACK);
         LCD_DrawString_NoDMA(1, 40, "CH0: Big Arm", LCD_GREEN, LCD_BLACK);
@@ -118,45 +114,16 @@ int main(void)
         LCD_DrawString_NoDMA(1, 100, "POSE: FLAT         ", LCD_WHITE, LCD_BLACK);
         LCD_DrawString_NoDMA(1, 200, "CHASSIS DISABLED", LCD_RED, LCD_BLACK);
 
+        Servo4_ArmRampTo(work->big_arm_us, work->small_arm_us);
+
         while (1)
         {
             char arm_buf[32];
-            uint8_t moving = 0;
-
-            if (cur_ch0 < tgt_ch0)
-            {
-                cur_ch0 += 5U;
-                if (cur_ch0 > tgt_ch0) cur_ch0 = tgt_ch0;
-                moving = 1;
-            }
-            else if (cur_ch0 > tgt_ch0)
-            {
-                cur_ch0 -= 5U;
-                if (cur_ch0 < tgt_ch0) cur_ch0 = tgt_ch0;
-                moving = 1;
-            }
-
-            if (cur_ch1 < tgt_ch1)
-            {
-                cur_ch1 += 5U;
-                if (cur_ch1 > tgt_ch1) cur_ch1 = tgt_ch1;
-                moving = 1;
-            }
-            else if (cur_ch1 > tgt_ch1)
-            {
-                cur_ch1 -= 5U;
-                if (cur_ch1 < tgt_ch1) cur_ch1 = tgt_ch1;
-                moving = 1;
-            }
-
-            Servo4_SetPulse(0U, cur_ch0);
-            Servo4_SetPulse(1U, cur_ch1);
-
             (void)sprintf(arm_buf, "CH0:%u CH1:%u    ",
-                          (unsigned)cur_ch0, (unsigned)cur_ch1);
+                          (unsigned)work->big_arm_us,
+                          (unsigned)work->small_arm_us);
             LCD_DrawString_NoDMA(1, 140, arm_buf, LCD_GREEN, LCD_BLACK);
-
-            HAL_Delay(15U);  /* 每步 15ms, 5us/步 → ~333us/s */
+            HAL_Delay(500U);
         }
     }
 #elif CIRCLE_UART_TEST_MODE
@@ -230,7 +197,8 @@ int main(void)
             }
 
             if ((circle_frame.data[2] >= 75U) &&
-                (circle_frame.data[2] <= 85U) &&
+ 
+ (circle_frame.data[2] <= 85U) &&
                 (circle_frame.data[3] >= 55U) &&
                 (circle_frame.data[3] <= 65U))
             {

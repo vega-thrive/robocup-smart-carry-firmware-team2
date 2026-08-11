@@ -86,13 +86,13 @@
 #define CURVE_RIGHT_MOVE_SPEED     130  /* 斜向前进横向速度 */
 #define CURVE_ENCODER_COUNTS      77700  /* 前向 42 cm × 1850 */
 
-/* 视觉对准完成后: 固定航向直进 3cm (5550 counts), 再执行 vision_next_mode 位移 */
-#define VISION_FORWARD_SPEED     300
-#define VISION_FORWARD_DISTANCE 5550   /* 3 cm × 1850 counts/cm */
+/* 视觉对准完成后: 固定航向直进 1.2cm, 再后退 1.7cm */
+#define VISION_FORWARD_SPEED     250
+#define VISION_FORWARD_DISTANCE 4070   /* 2.2 cm × 1850 counts/cm */
+#define VISION_BACK_DISTANCE    4995   /* 2.7 cm × 1850 counts/cm */
 
 /* 放置物块: 视觉对准+直进3cm后, 转盘解锁→旋转到目标槽位→释放→锁定→后退3cm */
 #define PLACE_DEFAULT_COLOR      21U   /* 默认放置颜色码, 后续按需修改 */
-#define PLACE_PREPARE_WAIT_TICKS 80    /* 转盘旋转稳定 400ms */
 #define PLACE_TURRET_WAIT_TICKS  40    /* 转盘旋转等待 200ms */
 #define PLACE_ARM_WAIT_TICKS     20    /* 释放动作等待 100ms */
 

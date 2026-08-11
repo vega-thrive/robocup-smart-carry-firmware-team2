@@ -2,6 +2,7 @@
 #define __COMPETITION_QR_H__
 
 #include "main.h"
+#include "QrMissionMap.h"
 
 typedef enum
 {
@@ -24,5 +25,9 @@ void CompetitionQr_Process(void);
 CompetitionQrStatus CompetitionQr_GetStatus(void);
 uint8_t CompetitionQr_GetTaskCode(CompetitionQrTask task);
 uint8_t CompetitionQr_GetAttemptCount(void);
+uint8_t CompetitionQr_GetTask1PlaceColor(uint8_t task_code,
+                                         uint8_t place_index);
+QrTask2Point CompetitionQr_GetTask2PlacePoint(uint8_t task_code,
+                                              uint8_t sequence_index);
 
 #endif

@@ -1368,6 +1368,16 @@
               <FilePath>..\BSP\CompetitionQr.h</FilePath>
             </File>
             <File>
+              <FileName>QrMissionMap.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\BSP\QrMissionMap.c</FilePath>
+            </File>
+            <File>
+              <FileName>QrMissionMap.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\BSP\QrMissionMap.h</FilePath>
+            </File>
+            <File>
               <FileName>MaxiCam.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\BSP\MaxiCam.c</FilePath>

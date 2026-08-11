@@ -113,6 +113,12 @@ void Servo4_SetPulse(uint8_t channel, uint16_t pulse_us)
     servo4_pulse[channel] = pulse_us;
 }
 
+uint16_t Servo4_GetPulse(uint8_t channel)
+{
+    if (channel >= SERVO4_CHANNEL_COUNT) return 0U;
+    return servo4_pulse[channel];
+}
+
 void Servo4_TIM9_IRQHandler(void)
 {
     uint16_t next_edge = SERVO4_FRAME_US;
@@ -196,6 +202,40 @@ void Servo4_UseTrophyPose(TrophyPoseType type)
     Servo4_SetPulse(1U, pose->small_arm_us);
 }
 
+/* 从当前脉宽缓降至目标, 5us/15ms, 阻塞. */
+void Servo4_ArmRampTo(uint16_t tgt0_us, uint16_t tgt1_us)
+{
+    uint16_t cur0 = servo4_pulse[0U], cur1 = servo4_pulse[1U];
+    uint8_t done = 0U;
+    while (!done)
+    {
+        done = 1U;
+        if (cur0 < tgt0_us) { cur0 += 5U; if (cur0 > tgt0_us) cur0 = tgt0_us; done = 0U; }
+        else if (cur0 > tgt0_us) { cur0 -= 5U; if (cur0 < tgt0_us) cur0 = tgt0_us; done = 0U; }
+        if (cur1 < tgt1_us) { cur1 += 5U; if (cur1 > tgt1_us) cur1 = tgt1_us; done = 0U; }
+        else if (cur1 > tgt1_us) { cur1 -= 5U; if (cur1 < tgt1_us) cur1 = tgt1_us; done = 0U; }
+        Servo4_SetPulse(0U, cur0);
+        Servo4_SetPulse(1U, cur1);
+        HAL_Delay(15U);
+    }
+}
+
+/* 非阻塞单步缓降: 每次调用走 5us, 返回 1 表示已到目标. */
+uint8_t Servo4_ArmRampTick(uint16_t tgt0_us, uint16_t tgt1_us)
+{
+    uint16_t cur0 = servo4_pulse[0U], cur1 = servo4_pulse[1U];
+    uint8_t done = 1U;
+
+    if (cur0 < tgt0_us) { cur0 += 5U; if (cur0 > tgt0_us) cur0 = tgt0_us; done = 0U; }
+    else if (cur0 > tgt0_us) { cur0 -= 5U; if (cur0 < tgt0_us) cur0 = tgt0_us; done = 0U; }
+    if (cur1 < tgt1_us) { cur1 += 5U; if (cur1 > tgt1_us) cur1 = tgt1_us; done = 0U; }
+    else if (cur1 > tgt1_us) { cur1 -= 5U; if (cur1 < tgt1_us) cur1 = tgt1_us; done = 0U; }
+
+    Servo4_SetPulse(0U, cur0);
+    Servo4_SetPulse(1U, cur1);
+    return done;
+}
+
 void Servo4_RotationHome(void)
 {
     rotation_pre_lock_us = 0U;  /* 回零清锁死状态 */
@@ -235,6 +275,13 @@ void Servo4_RotationUnlock(void)
         Servo4_SetPulse(ROTATION_SERVO_CHANNEL, rotation_pre_lock_us);
         rotation_pre_lock_us = 0U;
     }
+}
+
+/* 解锁并直接跳到目标 PWM, 跳过中间旧值, 避免转盘二次抖动 */
+void Servo4_RotationUnlockTo(uint16_t target_us)
+{
+    rotation_pre_lock_us = 0U;
+    Servo4_SetPulse(ROTATION_SERVO_CHANNEL, target_us);
 }
 
 /* 小爪子通道: CH3~CH7 (PA5/PA6/PA7/PC4/PC5) */

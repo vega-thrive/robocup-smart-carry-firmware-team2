@@ -30,11 +30,13 @@ static uint8_t trophy_det_confirm;
 static uint32_t trophy_det_last_seq;
 static uint8_t trophy_det_count;
 static uint32_t trophy_det_gap_until_ms;
+static VisionJob vision_job;
+static uint8_t place_step;
 static uint8_t final_left_stage;
+static uint8_t arm_to_task0_done;  /* 最后放置后缓降至 Task0 收拢 */
 static uint8_t  final_left_heading_stable_ticks;
 static uint32_t final_align_last_frame;
 static uint16_t final_align_tick;
-static uint8_t  place_step;
 static uint8_t  place_slot_idx;
 static uint16_t place_pwm_us;
 static uint8_t  place_seq_index;   /* 顺序放置: 0→1→2→3→4 */
@@ -118,28 +120,18 @@ void ProjectService_Init(void)
     task1_route_test_done = 0U;
     place_seq_index = 0;
     TurntableInventory_Init(840U, 400U);
-    /* 从竖直向上安全位缓慢降至平地工作姿态, 避免上电猛砸. */
+    /* 先设 Task0 起始脉宽再缓降至 FLAT, 避免上电猛砸. */
     {
-        const Task1ArmPose *safe = Task1Mechanism_GetSafeStartPose();
-        const Task1ArmPose *tgt  = Task1Mechanism_GetWorkingPose();
-        uint16_t cur0 = safe->big_arm_us, cur1 = safe->small_arm_us;
-        uint16_t tgt0 = tgt->big_arm_us, tgt1 = tgt->small_arm_us;
-        uint8_t done = 0U;
-        while (!done)
-        {
-            done = 1U;
-            if (cur0 < tgt0) { cur0 += 5U; if (cur0 > tgt0) cur0 = tgt0; done = 0U; }
-            else if (cur0 > tgt0) { cur0 -= 5U; if (cur0 < tgt0) cur0 = tgt0; done = 0U; }
-            if (cur1 < tgt1) { cur1 += 5U; if (cur1 > tgt1) cur1 = tgt1; done = 0U; }
-            else if (cur1 > tgt1) { cur1 -= 5U; if (cur1 < tgt1) cur1 = tgt1; done = 0U; }
-            Servo4_SetPulse(0U, cur0);
-            Servo4_SetPulse(1U, cur1);
-            HAL_Delay(15U);
-        }
+        const Task1ArmPose *t0 = Task1Mechanism_GetTask0Pose();
+        Servo4_SetPulse(0U, t0->big_arm_us);
+        Servo4_SetPulse(1U, t0->small_arm_us);
     }
-    /* 上电先退掉摄像头可能残留的模式循环(0x04), 再启动颜色识别 */
+    {
+        const Task1ArmPose *tgt = Task1Mechanism_GetWorkingPose();
+        Servo4_ArmRampTo(tgt->big_arm_us, tgt->small_arm_us);
+    }
+    /* 上电先退掉摄像头可能残留的模式循环, 不启动颜色收集 */
     (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
-    Task1Color_Start();
     ChassisPos_DrawStatus(1, "Home Launch");
     HAL_TIM_Base_Start_IT(&htim7);
 }
@@ -173,38 +165,53 @@ void ProjectService_Run(void)
 
     if (route_state == ROUTE_PLACE_PREPARE)
     {
-        /* 到达放置点: 解锁 → 旋转到当前槽位 → 等待稳定 → 开启视觉 */
-        mode_entry_tick++;
+        uint8_t target_color;
 
-        if (mode_entry_tick == 1)
+        LineFollow_Stop();
+
+        if (place_seq_index >= TURNTABLE_SLOT_COUNT)
         {
-            if (place_seq_index >= TURNTABLE_SLOT_COUNT)
-            {
-                /* 已放完5个槽位, 跳过后续所有放置 */
-                LineFollow_Stop();
-                __disable_irq();
-                route_state = vision_next_mode;
-                __enable_irq();
-                mode_entry_tick = 0;
-                lcd_div = 0;
-                ChassisPos_DrawStatus(1, "Route Resume");
-                return;
-            }
-            Servo4_RotationUnlock();
-            place_pwm_us = TurntableInventory_GetPwmForSlot(place_seq_index);
-            Servo4_SetPulse(2U, place_pwm_us);
-            ChassisPos_DrawStatus(1, "Place Prepare");
-        }
-        else if (mode_entry_tick >= PLACE_PREPARE_WAIT_TICKS)
-        {
-            vision_started = 0U;
             __disable_irq();
-            route_state = ROUTE_VISION_ALIGN;
+            route_state = vision_next_mode;
             __enable_irq();
             mode_entry_tick = 0;
             lcd_div = 0;
-            ChassisPos_DrawStatus(1, "Vision Align");
+            ChassisPos_DrawStatus(1, "Route Resume");
+            return;
         }
+
+        /* 根据当前放置点目标颜色查找实际槽位 */
+        target_color = CompetitionQr_GetTask1PlaceColor(
+            CompetitionQr_GetTaskCode(COMP_QR_TASK1), place_seq_index);
+
+        if ((target_color >= TURNTABLE_COLOR_CODE_MIN) &&
+            (target_color <= TURNTABLE_COLOR_CODE_MAX) &&
+            TurntableInventory_FindColor(target_color,
+                                         &place_slot_idx,
+                                         &place_pwm_us))
+        {
+            /* 按颜色查找到槽位 */
+        }
+        else
+        {
+            /* 暂无比赛颜色映射, 按抓取顺序放置 (不等于按颜色放置) */
+            place_slot_idx = place_seq_index;
+            place_pwm_us = TurntableInventory_GetPwmForSlot(place_slot_idx);
+            if (place_pwm_us == 0U)
+            {
+                ChassisPos_DrawStatus(1, "Slot ERR");
+                return;
+            }
+        }
+
+        vision_job = VISION_JOB_COLOR_PLACE;
+        vision_started = 0U;
+        __disable_irq();
+        route_state = ROUTE_VISION_ALIGN;
+        __enable_irq();
+        mode_entry_tick = 0;
+        lcd_div = 0;
+        ChassisPos_DrawStatus(1, "Vision Align");
         return;
     }
 
@@ -301,48 +308,166 @@ void ProjectService_Run(void)
             }
         }
 
-        if ((vision_status == VISION_ALIGN_DONE) ||
-            (vision_status == VISION_ALIGN_TIMEOUT))
+        if (vision_status == VISION_ALIGN_TIMEOUT)
         {
             VisionAlignment_Cancel();
-            ChassisPos_ResetEncoder();
-            ChassisPos_ResetVelocityPid();
-            HWT101_getAngle_Reset();
-            HeadingHold_Reset();
-            LineFollow_Stop();
-            /* 对准完成后固定航向直进 3cm, 再执行 vision_next_mode 位移 */
-            ChassisPos_Start(VISION_FORWARD_DISTANCE, VISION_FORWARD_DISTANCE,
-                             VISION_FORWARD_DISTANCE, VISION_FORWARD_DISTANCE);
-            __disable_irq();
-            route_state = ROUTE_VISION_FORWARD;
-            __enable_irq();
-            mode_entry_tick = 0;
-            lcd_div = 0;
-            vision_started = 0U;
-            ChassisPos_DrawStatus(1, "Fwd 3cm");
+            if (vision_job == VISION_JOB_COLOR_PLACE)
+            {
+                /* 色块放置超时: 停车, 保持锁死, 不标记槽位, 跳过 */
+                ChassisPos_ResetVelocityPid();
+                LineFollow_Stop();
+                vision_started = 0U;
+                __disable_irq();
+                route_state = ROUTE_PAUSE_GENERIC;
+                __enable_irq();
+                mode_entry_tick = 0;
+                lcd_div = 0;
+                ChassisPos_DrawStatus(1, "Vision TO Skip");
+                Move_Control(0, 0, 0, 0);
+                return;
+            }
         }
+        else if (vision_status == VISION_ALIGN_DONE)
+        {
+            /* 继续到前进阶段(保持锁死) */
+        }
+        else
+        {
+            return;
+        }
+
+        /* DONE 或 奖杯 TIMEOUT: 固定航向直进, 保持转盘锁死 */
+        VisionAlignment_Cancel();
+        ChassisPos_ResetEncoder();
+        ChassisPos_ResetVelocityPid();
+        HWT101_getAngle_Reset();
+        HeadingHold_Reset();
+        LineFollow_Stop();
+        ChassisPos_Start(VISION_FORWARD_DISTANCE, VISION_FORWARD_DISTANCE,
+                         VISION_FORWARD_DISTANCE, VISION_FORWARD_DISTANCE);
+        __disable_irq();
+        route_state = ROUTE_VISION_FORWARD;
+        __enable_irq();
+        mode_entry_tick = 0;
+        lcd_div = 0;
+        vision_started = 0U;
+        ChassisPos_DrawStatus(1, "Fwd 1.2cm");
         return;
     }
 
     if (route_state == ROUTE_VISION_FORWARD)
     {
-        /* 直进 3cm 完成 → 直接后退 3cm (转盘已在 PLACE_PREPARE 阶段到位) */
         if (ChassisPos_Update(VISION_FORWARD_SPEED, 0,
               HeadingHold_GetFreshCorrection()))
         {
             ChassisPos_ResetEncoder();
             ChassisPos_ResetVelocityPid();
             LineFollow_Stop();
-            ChassisPos_Start(-VISION_FORWARD_DISTANCE,
-                             -VISION_FORWARD_DISTANCE,
-                             -VISION_FORWARD_DISTANCE,
-                             -VISION_FORWARD_DISTANCE);
+
+            if (vision_job == VISION_JOB_COLOR_PLACE)
+            {
+                place_step = 0U;
+                __disable_irq();
+                route_state = ROUTE_PLACE;
+                __enable_irq();
+                mode_entry_tick = 0;
+                lcd_div = 0;
+                ChassisPos_DrawStatus(1, "Place Release");
+            }
+            else
+            {
+                int32_t back_dist = -VISION_BACK_DISTANCE;
+                ChassisPos_Start(back_dist, back_dist, back_dist, back_dist);
+                __disable_irq();
+                route_state = ROUTE_VISION_BACK;
+                __enable_irq();
+                mode_entry_tick = 0;
+                lcd_div = 0;
+                ChassisPos_DrawStatus(1, "Back 2.7cm");
+            }
+        }
+        return;
+    }
+
+    if (route_state == ROUTE_PLACE)
+    {
+        if (place_step == 0U)
+        {
+            uint16_t pre_pwm;
+            uint16_t delta;
+            char buf[24];
+
+            LineFollow_Stop();
+            pre_pwm = Servo4_GetPulse(2U);  /* 锁死状态的 CH2 PWM */
+            Servo4_RotationUnlockTo(place_pwm_us);
+
+            /* 按 PWM 跨度动态计算等待: 40 + delta/20 ticks (10ms/tick) */
+            delta = (pre_pwm > place_pwm_us)
+                    ? (pre_pwm - place_pwm_us)
+                    : (place_pwm_us - pre_pwm);
+            mode_entry_tick = (int)(40 + (int)delta / 20);
+
+            sprintf(buf, "PL:%d S:%d P:%u",
+                    place_seq_index + 1, place_slot_idx,
+                    (unsigned)place_pwm_us);
+            ChassisPos_DrawStatus(1, buf);
+
+            place_step = 1U;
+            lcd_div = 0;
+        }
+        else if (place_step == 1U)
+        {
+            lcd_div++;
+            if (lcd_div >= (unsigned)mode_entry_tick)
+            {
+                /* 第5块(末块): 抬臂后再后退; 其余块直接后退 */
+                if (place_seq_index == 4U)
+                {
+                    arm_to_task0_done = 0U;
+                    place_step = 2U;
+                }
+                else
+                {
+                    int32_t back_dist = -VISION_BACK_DISTANCE;
+                    if (vision_next_mode == ROUTE_FINAL_ROTATE_30)
+                        back_dist -= 5550;
+                    ChassisPos_ResetEncoder();
+                    ChassisPos_ResetVelocityPid();
+                    ChassisPos_Start(back_dist, back_dist, back_dist, back_dist);
+                    __disable_irq();
+                    route_state = ROUTE_VISION_BACK;
+                    __enable_irq();
+                    mode_entry_tick = 0;
+                    lcd_div = 0;
+                    ChassisPos_DrawStatus(1,
+                        (vision_next_mode == ROUTE_FINAL_ROTATE_30)
+                            ? "Back 5.7cm" : "Back 2.7cm");
+                }
+            }
+        }
+        else if (place_step == 2U)
+        {
+            /* 第5块: 缓慢抬臂到 Task0 收拢, 护住已放置物块 */
+            const Task1ArmPose *t0 = Task1Mechanism_GetTask0Pose();
+            if (Servo4_ArmRampTick(t0->big_arm_us, t0->small_arm_us))
+            {
+                arm_to_task0_done = 1U;
+                place_step = 3U;
+            }
+        }
+        else
+        {
+            /* place_step == 3: 抬臂完成, 启动后退 */
+            int32_t back_dist = -VISION_BACK_DISTANCE;
+            ChassisPos_ResetEncoder();
+            ChassisPos_ResetVelocityPid();
+            ChassisPos_Start(back_dist, back_dist, back_dist, back_dist);
             __disable_irq();
             route_state = ROUTE_VISION_BACK;
             __enable_irq();
             mode_entry_tick = 0;
             lcd_div = 0;
-            ChassisPos_DrawStatus(1, "Back 3cm");
+            ChassisPos_DrawStatus(1, "Back 2.7cm");
         }
         return;
     }
@@ -355,10 +480,15 @@ void ProjectService_Run(void)
             ChassisPos_ResetEncoder();
             ChassisPos_ResetVelocityPid();
             LineFollow_Stop();
-            /* 后退完成 → 标记空槽 → 锁死 → 前往下个路段 */
-            TurntableInventory_MarkEmpty(place_seq_index);
-            place_seq_index++;
-            Servo4_RotationLockNow();
+
+            if (vision_job == VISION_JOB_COLOR_PLACE)
+            {
+                /* 色块放置: 后退完成 → 标记空槽 → 锁死转盘 */
+                TurntableInventory_MarkEmpty(place_slot_idx);
+                place_seq_index++;
+                Servo4_RotationLockNow();
+            }
+
             if (vision_next_mode == ROUTE_REAR_ALIGN)
             {
                 ChassisPos_Start(-46250, 46250, -46250, 46250);
@@ -741,7 +871,6 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
             route_state = ROUTE_HOME_FIXED_PAUSE;
             lcd_div = 0;
             CompetitionQr_RequestStart(COMP_QR_TASK1);
-            Task1Color_Start();
             ChassisPos_DrawStatus(1, "Scan Task 1");
         }
     }
@@ -824,6 +953,7 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
             mode_entry_tick = 0;
             lcd_div = 0;
             route_state = ROUTE_TRACK_FIRST;
+            TurntableInventory_Reset();
             Task1Color_Start();
             ChassisPos_DrawStatus(1, "Line Follow");
         }
@@ -1123,6 +1253,23 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
 
     if (route_state == ROUTE_FINAL_ROTATE_ALIGN)
     {
+        /* Phase 0: 最后一个色块放置后缓降至 Task0 收拢, 再旋转 */
+        if (!arm_to_task0_done)
+        {
+            const Task1ArmPose *t0 = Task1Mechanism_GetTask0Pose();
+            if (Servo4_ArmRampTick(t0->big_arm_us, t0->small_arm_us))
+            {
+                arm_to_task0_done = 1U;
+                HWT101_getAngle_Reset();
+                HeadingHold_Reset();
+            }
+            else
+            {
+                LineFollow_Stop();
+                return;
+            }
+        }
+
         float a = Angle;
         if (a < 0.0f) a = -a;
 
@@ -1285,8 +1432,8 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                     ChassisPos_ResetEncoder();
                     ChassisPos_DrawStatus(1, "Rotate 30 CW"); break;
                 case ROUTE_FINAL_FORWARD_2:
-                    ChassisPos_Start(55500, 55500, 55500, 55500);
-                    ChassisPos_DrawStatus(1, "Final Fwd 30cm"); break;
+                    ChassisPos_Start(61050, 61050, 61050, 61050);
+                    ChassisPos_DrawStatus(1, "Final Fwd 33cm"); break;
                 case ROUTE_FINAL_ROTATE_ALIGN:
                     ChassisPos_ResetEncoder();
                     final_align_last_frame = 0;
@@ -1374,6 +1521,7 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                 {
                     vision_next_mode = ROUTE_TROPHY;
                     vision_started = 0U;
+                    vision_job = VISION_JOB_TROPHY;
                     route_state = ROUTE_VISION_ALIGN;
                     ChassisPos_DrawStatus(1, "Vision Align");
                 }

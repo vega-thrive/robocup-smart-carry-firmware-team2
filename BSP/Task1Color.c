@@ -1,6 +1,7 @@
 #include "Task1Color.h"
 #include "Servo4.h"
 #include "MaxiCam.h"
+#include "TurntableInventory.h"
 
 typedef enum {
     TASK1_COLOR_RED   = 21,
@@ -59,6 +60,12 @@ void Task1Color_Process(void)
     idx = ColorToIndex(frame.data[0]);
     if (idx >= TASK1_COLOR_COUNT) return;
     if (seen[idx]) return;
+
+    {
+        uint8_t captured_slot;
+        if (!TurntableInventory_RecordColor(frame.data[0], &captured_slot))
+            return;
+    }
 
     seen[idx] = 1U;
     count++;

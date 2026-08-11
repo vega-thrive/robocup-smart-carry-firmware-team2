@@ -3,17 +3,17 @@
 
 #define ALIGN_TARGET_X       80
 #define ALIGN_TARGET_Y       60
-#define ALIGN_ENTER_BAND       5
+#define ALIGN_ENTER_BAND       7
 #define ALIGN_COARSE_ERROR    10
-#define ALIGN_MIN_SPEED     120
-#define ALIGN_MAX_SPEED     150
+#define ALIGN_MIN_SPEED      80
+#define ALIGN_MAX_SPEED     110
 #define ALIGN_FINE_SPEED    100
-#define ALIGN_KP              8
+#define ALIGN_KP              5
 #define ALIGN_X_MOVE_SIGN    -1
 #define ALIGN_Y_MOVE_SIGN    -1
 #define ALIGN_FRAME_MAX_AGE 800U
 #define ALIGN_TIMEOUT_MS   12000U
-#define ALIGN_FINE_PULSE_MS   45U
+#define ALIGN_FINE_PULSE_MS   50U
 #define ALIGN_FINE_SETTLE_MS 120U
 #define ALIGN_FINISH_HOLD_MS 180U
 

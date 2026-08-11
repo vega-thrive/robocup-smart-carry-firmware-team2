@@ -3,6 +3,13 @@
 
 #include "main.h"
 
+/* 视觉任务类型: 色块放置 / 奖杯 */
+typedef enum
+{
+    VISION_JOB_COLOR_PLACE = 0,
+    VISION_JOB_TROPHY
+} VisionJob;
+
 /* 比赛路线状态机 */
 typedef enum
 {

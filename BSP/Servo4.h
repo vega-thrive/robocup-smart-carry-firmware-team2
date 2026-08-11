@@ -26,6 +26,7 @@
 /* ---- 底层驱动 ---- */
 void Servo4_Init(void);
 void Servo4_SetPulse(uint8_t channel, uint16_t pulse_us);
+uint16_t Servo4_GetPulse(uint8_t channel);
 void Servo4_TIM9_IRQHandler(void);
 
 /* ---- 高层舵机控制 ---- */
@@ -33,12 +34,15 @@ void Servo4_TIM9_IRQHandler(void);
 /* 大臂+小臂：任务1 平地 / 任务2 奖杯台位姿 */
 void Servo4_UseTask1Parameters(void);
 void Servo4_UseTrophyPose(TrophyPoseType pose);
+void Servo4_ArmRampTo(uint16_t tgt0_us, uint16_t tgt1_us);
+uint8_t Servo4_ArmRampTick(uint16_t tgt0_us, uint16_t tgt1_us);
 
 /* 旋转舵机 CH2 */
 void Servo4_RotationHome(void);
 void Servo4_RotationSetStep(uint8_t step);
 void Servo4_RotationLockNow(void);
 void Servo4_RotationUnlock(void);
+void Servo4_RotationUnlockTo(uint16_t target_us);
 
 /* 小舵机 CH3~CH7 全开/全合 */
 void Servo4_LittleAllOpen(void);

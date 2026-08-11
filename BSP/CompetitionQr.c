@@ -1,5 +1,6 @@
 #include "CompetitionQr.h"
 #include "GM65Scanner.h"
+#include "QrMissionMap.h"
 
 #define COMP_QR_ATTEMPT_TIMEOUT_MS 1000U
 #define COMP_QR_MAX_ATTEMPTS          3U
@@ -141,4 +142,16 @@ uint8_t CompetitionQr_GetTaskCode(CompetitionQrTask task)
 uint8_t CompetitionQr_GetAttemptCount(void)
 {
     return competition_qr_attempts;
+}
+
+uint8_t CompetitionQr_GetTask1PlaceColor(uint8_t task_code,
+                                         uint8_t place_index)
+{
+    return QrMissionMap_GetTask1Color(task_code, place_index);
+}
+
+QrTask2Point CompetitionQr_GetTask2PlacePoint(uint8_t task_code,
+                                               uint8_t sequence_index)
+{
+    return QrMissionMap_GetTask2Point(task_code, sequence_index);
 }
