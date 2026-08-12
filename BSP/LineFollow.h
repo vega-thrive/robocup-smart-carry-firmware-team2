@@ -49,26 +49,38 @@
 #define TROPHY_ROTATE_SPEED         372
 #define TROPHY_ROTATE_ANGLE        90.0f
 #define TROPHY_BACK_SPEED           300
-#define TROPHY_BACK_DISTANCE      44400  /* 24 cm x 1850 counts/cm */
+#define TROPHY_BACK_DISTANCE      62900  /* 34 cm x 1850 counts/cm */
 #define TROPHY_LEFT_SPEED           300
 #define TROPHY_LEFT1_DISTANCE     55500  /* calibrated 3.0 cm lateral travel */
 #define TROPHY_LEFT2_DISTANCE     64750  /* calibrated 3.5 cm lateral travel */
 #define TROPHY_LEFT3_DISTANCE     64750  /* calibrated 3.5 cm lateral travel */
+#define TROPHY_GRAB_FAST_SPEED       230  /* 收集: 与第一次巡线同速 */
+#define TROPHY_GRAB_SLOW_SPEED       230  /* 收集: 与第一次巡线同速 */
+#define TROPHY_PLACE_SETTLE_TICKS         80  /* 转盘旋转稳定等待 */
+#define TROPHY_ROTATE_SAFE_SETTLE_TICKS   80  /* 转盘回安全位稳定等待 */
+#define TROPHY_TARGET_POSE_SETTLE_TICKS   80  /* 目标姿态到位后稳定 800ms */
+#define GRIPPER_OPEN_WAIT_TICKS           30  /* 全开后等待 300ms */
+#define TROPHY_RELEASE_SETTLE_TICKS      100  /* 释放姿态稳定 1000ms */
+#define TROPHY_HALF_OPEN_WAIT_TICKS       10  /* 半开等待 100ms */
+#define TROPHY_DETACH_WAIT_TICKS          50  /* 脱钩开度等待 500ms */
+#define TROPHY_DROP_SETTLE_TICKS         100  /* 奖杯落稳 1000ms */
+#define TROPHY_LIFT_CLEAR_SETTLE_TICKS    50  /* 抬离后稳定 500ms */
+#define TROPHY_GRIP_CLOSE_TICKS       80  /* 0.4s at 200Hz: close claws before Task0 */
 #define TROPHY_RIGHT_BACK_SPEED     420
 #define TROPHY_RIGHT_SPEED           46
 #define TROPHY_FINAL_BACK_DISTANCE 410700 /* 222 cm x 1850 counts/cm */
 #define TROPHY_FINAL_RIGHT_DISTANCE 46250  /* calibrated 2.5 cm lateral travel */
 
 /* Trophy visual search (camera mode 2, 0x02): jiang_bei = code 26.
- * TROPHY_DETECT_CONFIRM = 3-frame confirm matches main.py CONFIRM;
- * every confirmed hit counts one trophy.  The little grippers close only
+ * Camera-side green-box confirmation already filters detections, so the MCU
+ * accepts the first fresh code 26 frame.  The little grippers close only
  * after TROPHY_DETECT_COUNT hits (3 trophies), like the bench test.
  * TROPHY_DETECT_CLEAR_MS = quiet gap after a hit so the same trophy still
  * inside the camera ROI cannot be counted repeatedly.
  * Detection arms only after the left move passes TROPHY_DETECT_ARM_COUNTS
  * so a just-grabbed trophy cannot re-trigger on the next phase. */
 #define TROPHY_DETECT_CODE        26U
-#define TROPHY_DETECT_CONFIRM      3U
+#define TROPHY_DETECT_CONFIRM      1U  /* 摄像头绿框已确认，STM32收到首帧26即响应 */
 #define TROPHY_DETECT_COUNT        3U
 #define TROPHY_DETECT_CLEAR_MS   400U
 #define TROPHY_DETECT_ARM_COUNTS 22000U
@@ -86,15 +98,31 @@
 #define CURVE_RIGHT_MOVE_SPEED     130  /* 斜向前进横向速度 */
 #define CURVE_ENCODER_COUNTS      77700  /* 前向 42 cm × 1850 */
 
-/* 视觉对准完成后: 固定航向直进 1.2cm, 再后退 1.7cm */
+/* 视觉对准完成后: 固定航向直进 2.2cm, 再后退 12.7cm */
 #define VISION_FORWARD_SPEED     250
 #define VISION_FORWARD_DISTANCE 4070   /* 2.2 cm × 1850 counts/cm */
-#define VISION_BACK_DISTANCE    4995   /* 2.7 cm × 1850 counts/cm */
+#define VISION_BACK_DISTANCE   23495   /* 12.7 cm × 1850 counts/cm */
 
 /* 放置物块: 视觉对准+直进3cm后, 转盘解锁→旋转到目标槽位→释放→锁定→后退3cm */
 #define PLACE_DEFAULT_COLOR      21U   /* 默认放置颜色码, 后续按需修改 */
 #define PLACE_TURRET_WAIT_TICKS  40    /* 转盘旋转等待 200ms */
 #define PLACE_ARM_WAIT_TICKS     20    /* 释放动作等待 100ms */
+
+/* 视觉对准完成后: 固定前进插入距离, 按领奖台分别标定.
+ * 亚军/冠军/季军手臂高度不同, 相同前进距离落点不同, 必须独立设置. */
+#define TROPHY_INSERT_RUNNER_COUNTS    7400  /* 亚军 4.0cm × 1850 */
+#define TROPHY_INSERT_CHAMPION_COUNTS  7400  /* 冠军 4.0cm × 1850 */
+#define TROPHY_INSERT_THIRD_COUNTS     7400  /* 季军 4.0cm × 1850 */
+#define TROPHY_FORWARD_INSERT_SPEED     100
+#define TROPHY_INSERT_SETTLE_TICKS       30  /* 前插到位后稳定 300ms */
+
+/* 放置完成后后退距离, 按领奖台分别标定.
+ * 不同姿态下机构伸出水平长度不同, 亚军最低可能需更远. */
+#define TROPHY_BACK_RUNNER_COUNTS     11100  /* 亚军 6.0cm × 1850 */
+#define TROPHY_BACK_CHAMPION_COUNTS    9250  /* 冠军 5.0cm × 1850 */
+#define TROPHY_BACK_THIRD_COUNTS       9250  /* 季军 5.0cm × 1850 */
+#define TROPHY_BACK_CLEAR_SPEED          80  /* 后退脱离速度 */
+#define TROPHY_BACK_SETTLE_TICKS         50  /* 后退到位后稳定 500ms */
 
 /* 后对准一: 视觉对准+直进3cm完成后左移2.5cm(46250 counts, 由直进完成分支预置),
  * 到位后前进40cm(74000 counts). 纯编码器定位, 不再用后八路灰度. */

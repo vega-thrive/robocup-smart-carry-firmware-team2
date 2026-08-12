@@ -7,9 +7,13 @@
 #define SERVO_RANGE_TEST_MODE   0
 #define COLOR_SERVO_TEST_MODE   0
 #define SERVO_CHANNEL_TEST_MODE 0
-#define TASK1_ROUTE_TEST_MODE   1   /* 仅跑任务1路段, 任务2扫码点停车 */
+#define TASK1_ROUTE_TEST_MODE   0   /* 仅跑任务1路段, 任务2扫码点停车 */
+#define TASK2_ONLY_TEST_MODE    1   /* 任务2专项测试: 绕过任务1, 直接收集+放置 */
+#define TASK2_COLLECT_ONLY      0   /* 任务2仅收集: 只收集不放置; 0=收集+放置 */
+#define TASK2_MOTOR_DISABLE     0   /* 任务2原地测试: 1=禁用四轮, 0=正常行驶 */
 #define ENCODER_ROUTE_TEST_MODE 0
 #define HARDWARE_DEBUG_MODE     0
+#define LITTLE_GRIPPER_SEQ_TEST 0   /* 小爪子顺序测试: 依次张开槽位0→1→2→3→4, 仅一次, 验证硬件接线 */
 
 /* Constants used by the older servo test branches. */
 #define COLOR_SERVO_CHANNEL     2U

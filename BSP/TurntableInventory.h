@@ -35,13 +35,18 @@ void TurntableInventory_Reset(void);
 uint8_t TurntableInventory_RecordColor(uint8_t color_code,
                                        uint8_t *slot_index);
 uint8_t TurntableInventory_RecordTrophy(uint8_t *slot_index);
+uint8_t TurntableInventory_RecordTrophyRank(uint8_t trophy_rank,
+                                            uint8_t *slot_index);
 
-/* Query helpers used later when selecting a stored color for placement. */
+/* Query helpers used later when selecting a stored item for placement. */
 uint8_t TurntableInventory_GetSlot(uint8_t slot_index,
                                    TurntableSlot *slot);
 uint8_t TurntableInventory_FindColor(uint8_t color_code,
                                      uint8_t *slot_index,
                                      uint16_t *pwm_us);
+uint8_t TurntableInventory_FindTrophyRank(uint8_t trophy_rank,
+                                          uint8_t *slot_index,
+                                          uint16_t *pwm_us);
 uint8_t TurntableInventory_MarkEmpty(uint8_t slot_index);
 
 uint8_t TurntableInventory_GetLoadedCount(void);

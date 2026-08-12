@@ -87,6 +87,16 @@ uint8_t TurntableInventory_RecordTrophy(uint8_t *slot_index)
                                      slot_index);
 }
 
+uint8_t TurntableInventory_RecordTrophyRank(uint8_t trophy_rank,
+                                            uint8_t *slot_index)
+{
+    /* trophy_rank: 0=冠军, 1=亚军, 2=季军, 与 QrTask2Trophy 对齐 */
+    if (trophy_rank > 2U) return 0U;
+    return TurntableInventory_Record(TURNTABLE_ITEM_TROPHY,
+                                     trophy_rank,
+                                     slot_index);
+}
+
 uint8_t TurntableInventory_GetSlot(uint8_t slot_index,
                                    TurntableSlot *slot)
 {
@@ -106,6 +116,27 @@ uint8_t TurntableInventory_FindColor(uint8_t color_code,
         if (turntable_slots[i].valid &&
             (turntable_slots[i].type == TURNTABLE_ITEM_COLOR) &&
             (turntable_slots[i].item_code == color_code))
+        {
+            if (slot_index != NULL) *slot_index = i;
+            if (pwm_us != NULL) *pwm_us = turntable_slots[i].pwm_us;
+            return 1U;
+        }
+    }
+
+    return 0U;
+}
+
+uint8_t TurntableInventory_FindTrophyRank(uint8_t trophy_rank,
+                                          uint8_t *slot_index,
+                                          uint16_t *pwm_us)
+{
+    uint8_t i;
+
+    for (i = 0U; i < TURNTABLE_SLOT_COUNT; i++)
+    {
+        if (turntable_slots[i].valid &&
+            (turntable_slots[i].type == TURNTABLE_ITEM_TROPHY) &&
+            (turntable_slots[i].item_code == trophy_rank))
         {
             if (slot_index != NULL) *slot_index = i;
             if (pwm_us != NULL) *pwm_us = turntable_slots[i].pwm_us;

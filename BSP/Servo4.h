@@ -19,9 +19,12 @@
 #define SERVO4_MIN_US       500U
 #define SERVO4_MAX_US      2500U
 
-/* 小舵机 CH3~CH7 开合角度 (反向: 890us=开, 2000us=合) */
-#define LITTLE_SERVO_OPEN_US  1600U
-#define LITTLE_SERVO_CLOSE_US 2000U
+/* 小舵机 CH3~CH7 开合角度 (反向: PWM减小=张开, PWM增大=闭合)
+ * 1350us 不低于 1300us, 全局限幅 500~2500us 不变. */
+#define LITTLE_SERVO_CLOSE_US     2060U  /* 夹紧 */
+#define LITTLE_SERVO_HALF_OPEN_US 1750U  /* 半开: 解除夹紧力 */
+#define LITTLE_SERVO_OPEN_US      1450U  /* 全开: 正常释放 */
+#define LITTLE_SERVO_RELEASE_US   1350U  /* 脱钩: 爪尖完全离开奖杯 */
 
 /* ---- 底层驱动 ---- */
 void Servo4_Init(void);
@@ -36,6 +39,7 @@ void Servo4_UseTask1Parameters(void);
 void Servo4_UseTrophyPose(TrophyPoseType pose);
 void Servo4_ArmRampTo(uint16_t tgt0_us, uint16_t tgt1_us);
 uint8_t Servo4_ArmRampTick(uint16_t tgt0_us, uint16_t tgt1_us);
+uint8_t Servo4_ArmRampTickSlow(uint16_t tgt0_us, uint16_t tgt1_us);  /* 2us/step */
 
 /* 旋转舵机 CH2 */
 void Servo4_RotationHome(void);
@@ -43,9 +47,17 @@ void Servo4_RotationSetStep(uint8_t step);
 void Servo4_RotationLockNow(void);
 void Servo4_RotationUnlock(void);
 void Servo4_RotationUnlockTo(uint16_t target_us);
+void Servo4_RotationSafe(void);   /* 转盘回到安全位置, 独立于 HOME 可标定 */
+uint8_t Servo4_RotationRampTick(uint16_t target_us);  /* 转盘缓变 5us/周期 */
 
-/* 小舵机 CH3~CH7 全开/全合 */
+/* 小舵机 CH3~CH7 全开/全合 (初始化用) */
 void Servo4_LittleAllOpen(void);
 void Servo4_LittleAllClose(void);
+
+/* 小舵机按槽位单独开合 (放置时只操作当前槽位, 防止其他奖杯掉落) */
+void Servo4_LittleHalfOpenSlot(uint8_t slot_index);
+void Servo4_LittleOpenSlot(uint8_t slot_index);
+void Servo4_LittleReleaseSlot(uint8_t slot_index);
+void Servo4_LittleCloseSlot(uint8_t slot_index);
 
 #endif

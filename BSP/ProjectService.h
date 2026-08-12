@@ -38,7 +38,10 @@ typedef enum
     ROUTE_VISION_ALIGN,
     ROUTE_VISION_FORWARD,
     ROUTE_VISION_BACK,
-    ROUTE_PLACE
+    ROUTE_PLACE,
+    ROUTE_PLACE_ERROR,
+    ROUTE_TASK2_PREPARE,
+    ROUTE_MISSION_DONE
 } RouteState;
 
 void ProjectService_Init(void);

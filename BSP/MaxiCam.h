@@ -7,8 +7,9 @@ typedef enum
 {
     MAXICAM_MODE_CIRCLE = 1,  /* 模式1: 同心圆识别 */
     MAXICAM_MODE_ABC = 2,     /* 模式2: 奖杯识别 (jiang_bei, 0x02) */
-    MAXICAM_MODE_COLOR = 3,   /* 模式3: 色块识别 */
-    MAXICAM_MODE_STOP = 4
+    MAXICAM_MODE_COLOR = 3,          /* 模式3: 色块识别 */
+    MAXICAM_MODE_STOP = 4,
+    MAXICAM_MODE_TROPHY_WHITE = 5   /* 模式5: white_zhu -> 奖杯代码26 */
 } MaxiCam_Mode;
 
 typedef struct

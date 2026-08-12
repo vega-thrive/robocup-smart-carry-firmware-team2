@@ -37,9 +37,55 @@ static uint8_t arm_to_task0_done;  /* 最后放置后缓降至 Task0 收拢 */
 static uint8_t  final_left_heading_stable_ticks;
 static uint32_t final_align_last_frame;
 static uint16_t final_align_tick;
+
+/* 放置流程状态机: 横移→停车→切目标姿态→稳定→视觉对准→粗调→
+ * 固定前插→前插稳定→转盘→缓慢降到释放姿态→低位稳定→三段开爪→落稳→
+ * 缓慢抬离→抬离稳定→后退→后退稳定→转盘回安全位→关爪→杯间运输姿态→标记完成.
+ * 杯间运输: 统一使用冠军抬头姿态 1000/1300, 横移完成后才切换下一杯姿态.
+ * 每杯完整参数集中于 TrophyPlaceProfile, 不再散落各处 if(place_index==2). */
+typedef enum {
+    PLACE_MOVE_LEFT            = 0,   /* 定距左移(仅底盘, 不启动视觉) */
+    PLACE_PREPARE_TARGET_POSE  = 27,  /* 缓慢切换到当前杯目标视觉姿态 */
+    PLACE_TARGET_POSE_SETTLE   = 28,  /* 姿态稳定后启动视觉 */
+    PLACE_ALIGN                = 1,   /* 视觉对准(手臂已就位, 不额外缓升) */
+    PLACE_COARSE_MOVE          = 10,  /* 编码器闭环粗调 */
+    PLACE_COARSE_SETTLE        = 11,  /* 粗调后稳定 */
+    PLACE_FORWARD_INSERT       = 30,  /* 视觉完成后固定前插, 保证转盘对准 */
+    PLACE_INSERT_SETTLE        = 31,  /* 前插到位后停车稳定, 消除俯仰 */
+    PLACE_ROTATE_SLOT          = 2,   /* 转盘旋至目标槽位 */
+    PLACE_ROTATE_SETTLE        = 3,   /* 等转盘稳定 */
+    PLACE_LOWER_TO_RELEASE     = 12,  /* 缓慢降到基础释放姿态(2us/step) */
+    PLACE_RELEASE_SETTLE       = 13,  /* 低位稳定 1000ms */
+    PLACE_HALF_OPEN            = 14,  /* 夹爪1750: 半开解除夹紧力 */
+    PLACE_FULL_OPEN            = 15,  /* 夹爪1450: 正常释放 */
+    PLACE_RELEASE_DETACH       = 21,  /* 夹爪1350: 最终脱钩 */
+    PLACE_DROP_SETTLE          = 16,  /* 低位保持奖杯落稳 1000ms */
+    PLACE_LIFT_CLEAR           = 17,  /* 缓慢抬离奖杯(2us/step) */
+    PLACE_LIFT_CLEAR_SETTLE    = 29,  /* 抬离后稳定 500ms */
+    PLACE_BACK_CLEAR           = 18,  /* 直线后退到安全距离 */
+    PLACE_BACK_SETTLE          = 32,  /* 后退到位后停车稳定, 消除滑行 */
+    PLACE_ROTATE_SAFE          = 23,  /* 转盘回安全位置 */
+    PLACE_ROTATE_SAFE_SETTLE   = 24,  /* 等转盘安全位稳定 */
+    PLACE_CLOSE_GRIPPER        = 25,  /* 关闭当前夹爪 */
+    PLACE_TRANSPORT_POSE       = 26,  /* 缓慢切到杯间运输姿态1000/1300 */
+    PLACE_FINISH               = 20   /* 标记空位 + 递增索引 → 返回完成 */
+} TrophyPlaceStep;
+
 static uint8_t  place_slot_idx;
 static uint16_t place_pwm_us;
 static uint8_t  place_seq_index;   /* 顺序放置: 0→1→2→3→4 */
+static uint8_t  task2_capture_index;
+static uint8_t  task2_place_index;
+static uint8_t  task2_prep_step;
+static uint8_t  task2_collect_complete;
+static uint8_t  task2_collect_done;
+static TrophyPlaceStep trophy_place_step;
+static uint8_t  trophy_place_settle_ticks;
+static uint8_t  trophy_place_back_active;
+static uint8_t  trophy_detect_armed;
+static uint8_t  trophy_clear_frames;
+static uint8_t  trophy_last_rank;
+static uint8_t  trophy_last_slot;
 static float left_heading_absolute;
 static uint8_t left_heading_valid;
 static int8_t yaw_ccw_sign = 1;
@@ -49,6 +95,43 @@ static int cross_marker_ticks;
 static uint8_t lcd_div;
 static int debug_line_state;
 static int debug_turn_target;
+
+/* 每杯完整放置参数, 全部集中在一处.
+ * 季军从此与 TROPHY_POSE_LIFTED (900/1000) 无任何关联, 只用任务1平地 1250/1500. */
+typedef struct
+{
+    uint16_t align_big;
+    uint16_t align_small;
+    uint16_t release_big;
+    uint16_t release_small;
+    uint16_t clear_big;
+    uint16_t clear_small;
+    int32_t  insert_distance;
+    int32_t  back_distance;
+} TrophyPlaceProfile;
+
+static const TrophyPlaceProfile *TrophyPlace_GetProfile(uint8_t place_index)
+{
+    static const TrophyPlaceProfile profiles[3] =
+    {
+        /* 亚军 PODIUM: 识别 1100/1400, 释放 1100/1200, 抬离 1100/1350 */
+        { 1100U, 1400U, 1100U, 1200U, 1100U, 1350U,
+          (int32_t)TROPHY_INSERT_RUNNER_COUNTS,
+          (int32_t)TROPHY_BACK_RUNNER_COUNTS },
+        /* 冠军 CHAMPION: 识别 1000/1300, 释放 1000/1100, 抬离 1000/1250 */
+        { 1000U, 1300U, 1000U, 1100U, 1000U, 1250U,
+          (int32_t)TROPHY_INSERT_CHAMPION_COUNTS,
+          (int32_t)TROPHY_BACK_CHAMPION_COUNTS },
+        /* 季军: 任务1 平地工作姿态 1250/1500, 释放不变, 抬离 1300/1600 */
+        { 1250U, 1500U, 1250U, 1500U, 1300U, 1600U,
+          (int32_t)TROPHY_INSERT_THIRD_COUNTS,
+          (int32_t)TROPHY_BACK_THIRD_COUNTS },
+    };
+    if (place_index >= 3U) place_index = 0U;
+    return &profiles[place_index];
+}
+
+static uint8_t TrophyPlace_Process(uint8_t place_index);
 
 /* ---- 对外状态查询 ---- */
 int ProjectService_GetRouteState(void)
@@ -110,6 +193,63 @@ static uint8_t TrophyDetect_Seen(void)
     return 0U;
 }
 
+/* 巡线收集用奖杯检测: 与TrophyDetect_Seen相同但不检查左移阈值,
+ * 因为TRACK_RETURN期间底盘是前向移动, 左移位置始终为0. */
+static uint8_t TrophyDetect_CollectSeen(void)
+{
+    MaxiCam_Frame frame;
+
+    if (!MaxiCam_GetLatest(&frame, 250U))
+        return 0U;
+    if (frame.sequence == trophy_det_last_seq)
+        return 0U;
+    trophy_det_last_seq = frame.sequence;
+
+    if ((int32_t)(HAL_GetTick() - trophy_det_gap_until_ms) < 0)
+        return 0U;
+
+    if (frame.data[0] != TROPHY_DETECT_CODE)
+    {
+        trophy_det_confirm = 0U;
+        return 0U;
+    }
+    if (++trophy_det_confirm >= TROPHY_DETECT_CONFIRM)
+    {
+        trophy_det_confirm = 0U;
+        trophy_det_gap_until_ms = HAL_GetTick() + TROPHY_DETECT_CLEAR_MS;
+        return 1U;
+    }
+    return 0U;
+}
+
+/* 离框确认: 命中后必须连续2帧看不到奖杯才重新使能检测,
+ * 防止同一奖杯滞留黄框内被重复计数. 原400ms静默期仍保留. */
+static uint8_t TrophyDetect_CheckClear(void)
+{
+    MaxiCam_Frame frame;
+
+    if (!MaxiCam_GetLatest(&frame, 250U))
+        return 0U;
+    if (frame.sequence == trophy_det_last_seq)
+        return 0U;
+    trophy_det_last_seq = frame.sequence;
+
+    if (frame.data[0] != TROPHY_DETECT_CODE)
+    {
+        if (++trophy_clear_frames >= 2U)
+        {
+            trophy_detect_armed = 1U;
+            trophy_clear_frames = 0U;
+            return 1U;
+        }
+    }
+    else
+    {
+        trophy_clear_frames = 0U;
+    }
+    return 0U;
+}
+
 /* ---- 初始化 ---- */
 void ProjectService_Init(void)
 {
@@ -119,6 +259,8 @@ void ProjectService_Init(void)
     last_steer = 0;
     task1_route_test_done = 0U;
     place_seq_index = 0;
+    task2_collect_complete = 0U;
+    task2_collect_done = 0U;
     TurntableInventory_Init(840U, 400U);
     /* 先设 Task0 起始脉宽再缓降至 FLAT, 避免上电猛砸. */
     {
@@ -132,8 +274,397 @@ void ProjectService_Init(void)
     }
     /* 上电先退掉摄像头可能残留的模式循环, 不启动颜色收集 */
     (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
+#if TASK2_ONLY_TEST_MODE
+    __disable_irq();
+    route_state = ROUTE_TASK2_PREPARE;
+    __enable_irq();
+    task2_prep_step = 0U;
+    task2_capture_index = 0U;
+    task2_place_index = 0U;
+    task2_collect_complete = 0U;
+    task2_collect_done = 0U;
+    trophy_det_count = 0U;
+    trophy_det_confirm = 0U;
+    trophy_det_last_seq = 0U;
+    trophy_det_gap_until_ms = 0U;
+    CompetitionQr_RequestStart(COMP_QR_TASK2);
+    ChassisPos_DrawStatus(1, "T2 Test Mode");
+#else
     ChassisPos_DrawStatus(1, "Home Launch");
+#endif
     HAL_TIM_Base_Start_IT(&htim7);
+}
+
+/* ---- 放置流程共享函数 ----
+ * 一次完整放置: 横移→切目标姿态→稳定→视觉对准→粗调→固定前插→
+ * 前插稳定→转盘→缓慢降到释放姿态→低位稳定→三段开爪→落稳→
+ * 缓慢抬离→抬离稳定→后退→后退稳定→转盘回安全位→关爪→运输姿态→标记完成.
+ * 杯间统一使用冠军抬头运输姿态 1000/1300.
+ * 每杯完整参数(识别/释放/抬离/前插距离/后退距离)统一在 TrophyPlaceProfile 中,
+ * 状态机从头到尾只读 profile, 不再散落 if(place_index==2) 分支.
+ * 季军为最后一杯, 关爪后直接FINISH, 不切换运输姿态.
+ * 返回 1 表示放置完成, 调用方负责推进 trophy_phase.
+ * place_index: 0=第一杯(亚军), 1=第二杯(冠军), 2=第三杯(季军). */
+static uint8_t TrophyPlace_Process(uint8_t place_index)
+{
+    const TrophyPlaceProfile *profile = TrophyPlace_GetProfile(place_index);
+    int hc;
+
+    switch (trophy_place_step)
+    {
+    case PLACE_MOVE_LEFT: {
+        int dist = (place_index == 0U) ? (int)TROPHY_LEFT1_DISTANCE
+                 : (place_index == 1U) ? (int)TROPHY_LEFT2_DISTANCE
+                 :                       (int)TROPHY_LEFT3_DISTANCE;
+
+        if (!pos_control_active)
+            ChassisPos_Start(-dist, dist, -dist, dist);
+
+        hc = HeadingHold_GetFreshCorrection();
+        if (ChassisPos_Update(0, TROPHY_LEFT_SPEED, hc))
+        {
+            LineFollow_Stop();
+            ChassisPos_ResetVelocityPid();
+            trophy_place_settle_ticks = 0U;
+            trophy_place_step = PLACE_PREPARE_TARGET_POSE;
+        }
+        break;
+    }
+
+    case PLACE_PREPARE_TARGET_POSE:
+        /* 缓慢切换到本领奖台专用视觉姿态 (2us/step). */
+        LineFollow_Stop();
+        if (Servo4_ArmRampTickSlow(profile->align_big, profile->align_small))
+        {
+            trophy_place_settle_ticks = 0U;
+            trophy_place_step = PLACE_TARGET_POSE_SETTLE;
+        }
+        break;
+
+    case PLACE_TARGET_POSE_SETTLE:
+        /* 姿态到位后稳定 800ms, 再启动视觉.
+         * 确保机构完全静止, 摄像头目标稳定. */
+        LineFollow_Stop();
+        if (++trophy_place_settle_ticks >= TROPHY_TARGET_POSE_SETTLE_TICKS)
+        {
+            if (place_index == 0U)
+                VisionAlignment_Start();
+            else
+                VisionAlignment_Restart();
+
+            trophy_place_step = PLACE_ALIGN;
+        }
+        break;
+
+    case PLACE_ALIGN: {
+        VisionAlignment_Status vs;
+
+        /* 视觉对准 (手臂已就位, 不再缓升) */
+        if (VisionAlignment_NeedCoarseMove())
+        {
+            int16_t dist  = VisionAlignment_GetCoarseDistance();
+            uint8_t axis  = VisionAlignment_GetCoarseAxis();
+            ChassisPos_ResetEncoder();
+            ChassisPos_ResetVelocityPid();
+            if (axis == 0U)
+                ChassisPos_Start(dist, dist, dist, dist);
+            else
+                ChassisPos_Start(-dist, dist, -dist, dist);
+            VisionAlignment_ClearCoarseMove();
+            trophy_place_step = PLACE_COARSE_MOVE;
+        }
+        else
+        {
+            vs = VisionAlignment_GetStatus();
+            if (vs == VISION_ALIGN_RUNNING)
+            {
+                int vt[4];
+                VisionAlignment_GetWheelTargets(vt);
+                wheel_target[1] = vt[0];
+                wheel_target[2] = vt[1];
+                wheel_target[3] = vt[2];
+                wheel_target[4] = vt[3];
+            }
+            else
+            {
+                VisionAlignment_Finish();
+                LineFollow_Stop();
+                ChassisPos_ResetVelocityPid();
+                Move_Control(0, 0, 0, 0);
+                trophy_place_step = PLACE_FORWARD_INSERT;
+            }
+        }
+        break;
+    }
+
+    case PLACE_COARSE_MOVE: {
+        uint8_t coarse_axis = VisionAlignment_GetCoarseAxis();
+        hc = HeadingHold_GetFreshCorrection();
+        if (pos_fault)
+        {
+            LineFollow_Stop();
+            ChassisPos_ResetVelocityPid();
+            Move_Control(0, 0, 0, 0);
+            VisionAlignment_Finish();
+            trophy_place_step = PLACE_ROTATE_SLOT;
+        }
+        else if (ChassisPos_Update(
+                     (coarse_axis == 0U) ? ALIGN_COARSE_SPEED : 0,
+                     (coarse_axis == 1U) ? ALIGN_COARSE_SPEED : 0,
+                     hc))
+        {
+            LineFollow_Stop();
+            ChassisPos_ResetVelocityPid();
+            Move_Control(0, 0, 0, 0);
+            trophy_place_settle_ticks = 0U;
+            trophy_place_step = PLACE_COARSE_SETTLE;
+        }
+        break;
+    }
+
+    case PLACE_COARSE_SETTLE:
+        LineFollow_Stop();
+        ChassisPos_ResetVelocityPid();
+        Move_Control(0, 0, 0, 0);
+        if (++trophy_place_settle_ticks >= 10U)
+        {
+            VisionAlignment_ResumeAfterCoarse();
+            trophy_place_step = PLACE_ALIGN;
+        }
+        break;
+
+    case PLACE_FORWARD_INSERT:
+        /* 视觉对准完成后按本领奖台距离前插, 编码器闭环. */
+        if (!pos_control_active)
+        {
+            int32_t fwd = profile->insert_distance;
+            ChassisPos_ResetEncoder();
+            ChassisPos_ResetVelocityPid();
+            ChassisPos_Start(fwd, fwd, fwd, fwd);
+        }
+        hc = HeadingHold_GetFreshCorrection();
+        if (ChassisPos_Update(TROPHY_FORWARD_INSERT_SPEED, 0, hc))
+        {
+            LineFollow_Stop();
+            ChassisPos_ResetVelocityPid();
+            Move_Control(0, 0, 0, 0);
+            trophy_place_settle_ticks = 0U;
+            trophy_place_step = PLACE_INSERT_SETTLE;
+        }
+        break;
+
+    case PLACE_INSERT_SETTLE:
+        /* 前插到位后停车稳定, 消除车身俯仰, 避免转盘旋转时扫偏 */
+        LineFollow_Stop();
+        if (++trophy_place_settle_ticks >= TROPHY_INSERT_SETTLE_TICKS)
+            trophy_place_step = PLACE_ROTATE_SLOT;
+        break;
+
+    case PLACE_ROTATE_SLOT: {
+        QrTask2Trophy wanted;
+        uint8_t slot_idx;
+        uint16_t pwm;
+
+        LineFollow_Stop();
+        ChassisPos_ResetVelocityPid();
+        Move_Control(0, 0, 0, 0);
+
+        wanted = CompetitionQr_GetTask2PlaceTrophy(place_index);
+        if (TurntableInventory_FindTrophyRank((uint8_t)wanted, &slot_idx, &pwm))
+        {
+            place_slot_idx = slot_idx;
+            place_pwm_us   = pwm;
+            Servo4_RotationUnlockTo(pwm);
+        }
+        else
+        {
+            place_slot_idx = place_index;
+            place_pwm_us   = TurntableInventory_GetPwmForSlot(place_index);
+            Servo4_RotationUnlockTo(place_pwm_us);
+        }
+        trophy_place_settle_ticks = 0U;
+        trophy_place_step = PLACE_ROTATE_SETTLE;
+        break;
+    }
+
+    case PLACE_ROTATE_SETTLE:
+        LineFollow_Stop();
+        ChassisPos_ResetVelocityPid();
+        Move_Control(0, 0, 0, 0);
+        if (++trophy_place_settle_ticks >= TROPHY_PLACE_SETTLE_TICKS)
+        {
+            trophy_place_settle_ticks = 0U;
+            trophy_place_step = PLACE_LOWER_TO_RELEASE;
+        }
+        break;
+
+    case PLACE_LOWER_TO_RELEASE:
+        /* 缓慢降到本领奖台释放姿态 (2us/step). */
+        LineFollow_Stop();
+        if (Servo4_ArmRampTickSlow(profile->release_big, profile->release_small))
+        {
+            trophy_place_settle_ticks = 0U;
+            trophy_place_step = PLACE_RELEASE_SETTLE;
+        }
+        break;
+
+    case PLACE_RELEASE_SETTLE:
+        LineFollow_Stop();
+        if (++trophy_place_settle_ticks >= TROPHY_RELEASE_SETTLE_TICKS)
+        {
+            Servo4_LittleHalfOpenSlot(place_slot_idx);
+            trophy_place_settle_ticks = 0U;
+            trophy_place_step = PLACE_HALF_OPEN;
+        }
+        break;
+
+    case PLACE_HALF_OPEN:
+        /* 半开等待后全开, 两段释放减少横向冲击 */
+        LineFollow_Stop();
+        if (++trophy_place_settle_ticks >= TROPHY_HALF_OPEN_WAIT_TICKS)
+        {
+            Servo4_LittleOpenSlot(place_slot_idx);
+            trophy_place_settle_ticks = 0U;
+            trophy_place_step = PLACE_FULL_OPEN;
+        }
+        break;
+
+    case PLACE_FULL_OPEN:
+        /* 夹爪全开 1450us → 等待 300ms */
+        LineFollow_Stop();
+        if (++trophy_place_settle_ticks >= GRIPPER_OPEN_WAIT_TICKS)
+        {
+            Servo4_LittleReleaseSlot(place_slot_idx);
+            trophy_place_settle_ticks = 0U;
+            trophy_place_step = PLACE_RELEASE_DETACH;
+        }
+        break;
+
+    case PLACE_RELEASE_DETACH:
+        /* 最终脱钩 1350us → 等待 300ms, 确保爪尖完全离开奖杯 */
+        LineFollow_Stop();
+        if (++trophy_place_settle_ticks >= TROPHY_DETACH_WAIT_TICKS)
+        {
+            trophy_place_settle_ticks = 0U;
+            trophy_place_step = PLACE_DROP_SETTLE;
+        }
+        break;
+
+    case PLACE_DROP_SETTLE:
+        /* 奖杯落稳, 避免未落稳就抬臂导致奖杯移位 */
+        LineFollow_Stop();
+        if (++trophy_place_settle_ticks >= TROPHY_DROP_SETTLE_TICKS)
+        {
+            trophy_place_settle_ticks = 0U;
+            trophy_place_step = PLACE_LIFT_CLEAR;
+        }
+        break;
+
+    case PLACE_LIFT_CLEAR:
+        /* 缓慢抬离奖杯 (2us/step), 避免快速抬升勾住奖杯. */
+        LineFollow_Stop();
+        if (Servo4_ArmRampTickSlow(profile->clear_big, profile->clear_small))
+        {
+            trophy_place_settle_ticks = 0U;
+            trophy_place_step = PLACE_LIFT_CLEAR_SETTLE;
+        }
+        break;
+
+    case PLACE_LIFT_CLEAR_SETTLE:
+        /* 抬离完成后稳定 500ms, 确保爪尖完全脱离再后退 */
+        LineFollow_Stop();
+        if (++trophy_place_settle_ticks >= TROPHY_LIFT_CLEAR_SETTLE_TICKS)
+        {
+            trophy_place_back_active = 0U;
+            trophy_place_step = PLACE_BACK_CLEAR;
+        }
+        break;
+
+    case PLACE_BACK_CLEAR:
+        /* 按本领奖台距离后退, 编码器闭环 */
+        if (!trophy_place_back_active)
+        {
+            int32_t back = -profile->back_distance;
+            ChassisPos_ResetEncoder();
+            ChassisPos_ResetVelocityPid();
+            ChassisPos_Start(back, back, back, back);
+            trophy_place_back_active = 1U;
+        }
+        hc = HeadingHold_GetFreshCorrection();
+        if (ChassisPos_Update(TROPHY_BACK_CLEAR_SPEED, 0, hc))
+        {
+            LineFollow_Stop();
+            ChassisPos_ResetVelocityPid();
+            Move_Control(0, 0, 0, 0);
+            trophy_place_back_active = 0U;
+            trophy_place_settle_ticks = 0U;
+            trophy_place_step = PLACE_BACK_SETTLE;
+        }
+        break;
+
+    case PLACE_BACK_SETTLE:
+        /* 后退到位后停车稳定, 消除惯性滑行.
+         * 车身滑动时旋转转盘, 边缘可能扫到奖杯. */
+        LineFollow_Stop();
+        if (++trophy_place_settle_ticks >= TROPHY_BACK_SETTLE_TICKS)
+            trophy_place_step = PLACE_ROTATE_SAFE;
+        break;
+
+    case PLACE_ROTATE_SAFE:
+        /* 转盘回到安全位置(独立可标定), 避免横移时撞领奖台 */
+        LineFollow_Stop();
+        Servo4_RotationSafe();
+        trophy_place_settle_ticks = 0U;
+        trophy_place_step = PLACE_ROTATE_SAFE_SETTLE;
+        break;
+
+    case PLACE_ROTATE_SAFE_SETTLE:
+        /* 等转盘安全位稳定 */
+        LineFollow_Stop();
+        if (++trophy_place_settle_ticks >= TROPHY_ROTATE_SAFE_SETTLE_TICKS)
+        {
+            trophy_place_settle_ticks = 0U;
+            trophy_place_step = PLACE_CLOSE_GRIPPER;
+        }
+        break;
+
+    case PLACE_CLOSE_GRIPPER:
+        /* 关闭当前槽位夹爪, 奖杯已完全脱离.
+         * 季军是最后一杯, 完成后直接结束, 无需切运输姿态. */
+        LineFollow_Stop();
+        Servo4_LittleCloseSlot(place_slot_idx);
+        trophy_place_settle_ticks = 0U;
+        if (place_index == 2U)
+            trophy_place_step = PLACE_FINISH;
+        else
+            trophy_place_step = PLACE_TRANSPORT_POSE;
+        break;
+
+    case PLACE_TRANSPORT_POSE:
+        /* 切换到冠军抬头运输姿态 1000/1300, 提高机构避免撞台.
+         * 下一杯若是冠军则直接保持, 若是季军则横移到达后再切换. */
+        LineFollow_Stop();
+        if (Servo4_ArmRampTick(TROPHY_TRANSPORT_BIG_US,
+                               TROPHY_TRANSPORT_SMALL_US))
+        {
+            trophy_place_step = PLACE_FINISH;
+        }
+        break;
+
+    case PLACE_FINISH:
+        /* 运输姿态就绪 → 标记空位 + 递增索引.
+         * task2_place_index 在所有退出动作完成后才递增. */
+        LineFollow_Stop();
+        TurntableInventory_MarkEmpty(place_slot_idx);
+        task2_place_index++;
+        return 1U;
+
+    default:
+        trophy_place_step = PLACE_MOVE_LEFT;
+        break;
+    }
+
+    return 0U;
 }
 
 /* ---- 主循环 ---- */
@@ -144,6 +675,84 @@ void ProjectService_Run(void)
     ChassisPos_FlushDisplay();
     Task1Color_Process();
 
+#if LITTLE_GRIPPER_SEQ_TEST
+    {
+        static uint8_t  grip_test_state  = 0U;
+        static uint16_t grip_test_ticks  = 0U;
+        static uint8_t  grip_test_slot   = 0U;
+
+        /* ~100Hz loop → 1 tick = 10ms */
+        switch (grip_test_state)
+        {
+        case 0U: /* 初始化: 全部夹紧 */
+            Servo4_LittleAllClose();
+            grip_test_ticks = 0U;
+            grip_test_state = 1U;
+            break;
+
+        case 1U: /* 稳定等待 500ms */
+            if (++grip_test_ticks >= 50U)
+            {
+                grip_test_ticks = 0U;
+                grip_test_state = 2U;
+            }
+            break;
+
+        case 2U: /* 张开当前槽位 (1450us = 全开) */
+            Servo4_LittleOpenSlot(grip_test_slot);
+            {
+                char _buf[16];
+                sprintf(_buf, "GRIP %d OPEN", (int)grip_test_slot);
+                ChassisPos_DrawStatus(1, _buf);
+            }
+            grip_test_ticks = 0U;
+            grip_test_state = 3U;
+            break;
+
+        case 3U: /* 保持张开 2s, 肉眼确认是第几个爪子 */
+            if (++grip_test_ticks >= 200U)
+            {
+                grip_test_ticks = 0U;
+                grip_test_state = 4U;
+            }
+            break;
+
+        case 4U: /* 夹紧当前槽位 */
+            Servo4_LittleCloseSlot(grip_test_slot);
+            {
+                char _buf[16];
+                sprintf(_buf, "GRIP %d CLOSE", (int)grip_test_slot);
+                ChassisPos_DrawStatus(1, _buf);
+            }
+            grip_test_ticks = 0U;
+            grip_test_state = 5U;
+            break;
+
+        case 5U: /* 槽位间等待 800ms */
+            if (++grip_test_ticks >= 80U)
+            {
+                grip_test_ticks = 0U;
+                grip_test_slot++;
+                if (grip_test_slot >= 5U)
+                    grip_test_state = 6U;
+                else
+                    grip_test_state = 2U;
+            }
+            break;
+
+        case 6U: /* 测试完成, 全部夹紧 */
+            Servo4_LittleAllClose();
+            ChassisPos_DrawStatus(1, "GRIP SEQ DONE");
+            grip_test_state = 7U;
+            break;
+
+        default: /* 完成, 不再动作 */
+            break;
+        }
+        return;
+    }
+#endif
+
 #if HARDWARE_DEBUG_MODE
     if (++lcd_div >= 20)
     {
@@ -153,6 +762,7 @@ void ProjectService_Run(void)
     return;
 #endif
 
+#if !TASK2_ONLY_TEST_MODE
     if (task1_route_test_done)
     {
         if (++lcd_div >= 5)
@@ -162,56 +772,102 @@ void ProjectService_Run(void)
         }
         return;
     }
+#endif
+
+    if (route_state == ROUTE_MISSION_DONE)
+    {
+        LineFollow_Stop();
+        if (++lcd_div >= 10)
+        {
+#if TASK2_COLLECT_ONLY
+            ChassisPos_DrawStatus(1, "T2 COLL DONE");
+#else
+            ChassisPos_DrawStatus(1, "T2 MISSION OK");
+#endif
+            lcd_div = 0;
+        }
+        return;
+    }
 
     if (route_state == ROUTE_PLACE_PREPARE)
     {
-        uint8_t target_color;
+        uint8_t ok = 0U;
 
         LineFollow_Stop();
 
-        if (place_seq_index >= TURNTABLE_SLOT_COUNT)
+        if (vision_job == VISION_JOB_TROPHY)
         {
-            __disable_irq();
-            route_state = vision_next_mode;
-            __enable_irq();
-            mode_entry_tick = 0;
-            lcd_div = 0;
-            ChassisPos_DrawStatus(1, "Route Resume");
-            return;
-        }
+            /* 任务2 奖杯放置: 按固定顺序 B→A→C 查找槽位 */
+            QrTask2Trophy wanted;
+            uint8_t slot_idx;
+            uint16_t pwm;
 
-        /* 根据当前放置点目标颜色查找实际槽位 */
-        target_color = CompetitionQr_GetTask1PlaceColor(
-            CompetitionQr_GetTaskCode(COMP_QR_TASK1), place_seq_index);
+            if (task2_place_index >= QR_TASK2_PLACE_COUNT)
+                goto place_prep_done;
 
-        if ((target_color >= TURNTABLE_COLOR_CODE_MIN) &&
-            (target_color <= TURNTABLE_COLOR_CODE_MAX) &&
-            TurntableInventory_FindColor(target_color,
-                                         &place_slot_idx,
-                                         &place_pwm_us))
-        {
-            /* 按颜色查找到槽位 */
+            wanted = CompetitionQr_GetTask2PlaceTrophy(task2_place_index);
+            if (wanted == QR_TASK2_TROPHY_INVALID)
+                goto place_prep_error;
+
+            if (TurntableInventory_FindTrophyRank((uint8_t)wanted,
+                                                   &slot_idx, &pwm))
+            {
+                place_slot_idx = slot_idx;
+                place_pwm_us = pwm;
+                ok = 1U;
+            }
         }
         else
         {
-            /* 暂无比赛颜色映射, 按抓取顺序放置 (不等于按颜色放置) */
-            place_slot_idx = place_seq_index;
-            place_pwm_us = TurntableInventory_GetPwmForSlot(place_slot_idx);
-            if (place_pwm_us == 0U)
+            /* 任务1 色块放置: 按路线顺序查询目标颜色 → 库存查找槽位 */
+            uint8_t target_color;
+
+            if (place_seq_index >= TURNTABLE_SLOT_COUNT)
+                goto place_prep_done;
+
+            target_color = CompetitionQr_GetTask1PlaceColor(
+                CompetitionQr_GetTaskCode(COMP_QR_TASK1), place_seq_index);
+
+            if ((target_color >= TURNTABLE_COLOR_CODE_MIN) &&
+                (target_color <= TURNTABLE_COLOR_CODE_MAX) &&
+                TurntableInventory_FindColor(target_color,
+                                             &place_slot_idx,
+                                             &place_pwm_us))
             {
-                ChassisPos_DrawStatus(1, "Slot ERR");
-                return;
+                ok = 1U;
             }
         }
 
-        vision_job = VISION_JOB_COLOR_PLACE;
-        vision_started = 0U;
+        if (ok)
+        {
+            vision_job = (vision_job == VISION_JOB_TROPHY)
+                         ? VISION_JOB_TROPHY : VISION_JOB_COLOR_PLACE;
+            vision_started = 0U;
+            __disable_irq();
+            route_state = ROUTE_VISION_ALIGN;
+            __enable_irq();
+            mode_entry_tick = 0;
+            lcd_div = 0;
+            ChassisPos_DrawStatus(1, "Vision Align");
+            return;
+        }
+
+place_prep_error:
         __disable_irq();
-        route_state = ROUTE_VISION_ALIGN;
+        route_state = ROUTE_PLACE_ERROR;
         __enable_irq();
         mode_entry_tick = 0;
         lcd_div = 0;
-        ChassisPos_DrawStatus(1, "Vision Align");
+        ChassisPos_DrawStatus(1, "Place ERR");
+        return;
+
+place_prep_done:
+        __disable_irq();
+        route_state = vision_next_mode;
+        __enable_irq();
+        mode_entry_tick = 0;
+        lcd_div = 0;
+        ChassisPos_DrawStatus(1, "Route Resume");
         return;
     }
 
@@ -364,8 +1020,8 @@ void ProjectService_Run(void)
             ChassisPos_ResetVelocityPid();
             LineFollow_Stop();
 
-            if (vision_job == VISION_JOB_COLOR_PLACE)
             {
+                /* 色块和奖杯都走 ROUTE_PLACE 解锁转盘 */
                 place_step = 0U;
                 __disable_irq();
                 route_state = ROUTE_PLACE;
@@ -373,17 +1029,6 @@ void ProjectService_Run(void)
                 mode_entry_tick = 0;
                 lcd_div = 0;
                 ChassisPos_DrawStatus(1, "Place Release");
-            }
-            else
-            {
-                int32_t back_dist = -VISION_BACK_DISTANCE;
-                ChassisPos_Start(back_dist, back_dist, back_dist, back_dist);
-                __disable_irq();
-                route_state = ROUTE_VISION_BACK;
-                __enable_irq();
-                mode_entry_tick = 0;
-                lcd_div = 0;
-                ChassisPos_DrawStatus(1, "Back 2.7cm");
             }
         }
         return;
@@ -420,8 +1065,9 @@ void ProjectService_Run(void)
             lcd_div++;
             if (lcd_div >= (unsigned)mode_entry_tick)
             {
-                /* 第5块(末块): 抬臂后再后退; 其余块直接后退 */
-                if (place_seq_index == 4U)
+                /* 第5块(末块, 仅色块): 抬臂后再后退; 其余直接后退 */
+                if ((vision_job == VISION_JOB_COLOR_PLACE) &&
+                    (place_seq_index == 4U))
                 {
                     arm_to_task0_done = 0U;
                     place_step = 2U;
@@ -472,6 +1118,18 @@ void ProjectService_Run(void)
         return;
     }
 
+    if (route_state == ROUTE_PLACE_ERROR)
+    {
+        /* 颜色查找失败: 停车, 保持锁死, 不递增索引, 不标记空槽 */
+        LineFollow_Stop();
+        if (++lcd_div >= 50)
+        {
+            lcd_div = 0;
+            ChassisPos_DrawStatus(1, "Place ERR");
+        }
+        return;
+    }
+
     if (route_state == ROUTE_VISION_BACK)
     {
         if (ChassisPos_Update(VISION_FORWARD_SPEED, 0,
@@ -483,33 +1141,155 @@ void ProjectService_Run(void)
 
             if (vision_job == VISION_JOB_COLOR_PLACE)
             {
-                /* 色块放置: 后退完成 → 标记空槽 → 锁死转盘 */
                 TurntableInventory_MarkEmpty(place_slot_idx);
                 place_seq_index++;
                 Servo4_RotationLockNow();
             }
+            else if (vision_job == VISION_JOB_TROPHY)
+            {
+                TurntableInventory_MarkEmpty(place_slot_idx);
+                task2_place_index++;
+                Servo4_RotationLockNow();
 
-            if (vision_next_mode == ROUTE_REAR_ALIGN)
+                if (task2_place_index >= QR_TASK2_PLACE_COUNT)
+                {
+                    /* 三个奖杯全部放完 → 180°回Home */
+                    ChassisPos_ResetEncoder();
+                    HWT101_getAngle_Reset();
+                    HeadingHold_Reset();
+                    __disable_irq();
+                    route_state = ROUTE_FINAL_ROTATE_180;
+                    __enable_irq();
+                    mode_entry_tick = 0;
+                    lcd_div = 0;
+                    ChassisPos_DrawStatus(1, "Rotate 180 CW");
+                    return;
+                }
+            }
+
+            if (vision_job == VISION_JOB_TROPHY)
+            {
+                /* 还有奖杯未放: 继续 PLACE_PREPARE */
+                __disable_irq();
+                route_state = ROUTE_PLACE_PREPARE;
+                __enable_irq();
+            }
+            else if (vision_next_mode == ROUTE_REAR_ALIGN)
             {
                 ChassisPos_Start(-46250, 46250, -46250, 46250);
                 ChassisPos_DrawStatus(1, "Left 2.5cm");
+                __disable_irq();
+                route_state = vision_next_mode;
+                __enable_irq();
             }
             else if (vision_next_mode == ROUTE_REAR_ALIGN_2)
             {
                 ChassisPos_Start(-74000, -74000, -74000, -74000);
                 ChassisPos_DrawStatus(1, "Back 40cm");
+                __disable_irq();
+                route_state = vision_next_mode;
+                __enable_irq();
             }
             else if (vision_next_mode == ROUTE_FINAL_LEFT_FORWARD)
             {
                 ChassisPos_Start(-37000, -37000, -37000, -37000);
                 ChassisPos_DrawStatus(1, "Back 20cm");
+                __disable_irq();
+                route_state = vision_next_mode;
+                __enable_irq();
             }
-            __disable_irq();
-            route_state = vision_next_mode;
-            __enable_irq();
+            else
+            {
+                __disable_irq();
+                route_state = vision_next_mode;
+                __enable_irq();
+            }
             mode_entry_tick = 0;
             lcd_div = 0;
             ChassisPos_DrawStatus(1, "Route Resume");
+        }
+        return;
+    }
+
+    if (route_state == ROUTE_TASK2_PREPARE)
+    {
+        const Task1ArmPose *tgt;
+
+        if (task2_prep_step == 0U)
+        {
+            LineFollow_Stop();
+            TurntableInventory_Reset();
+            /* 复用任务1已验证的转盘归零路径。 */
+            Servo4_RotationHome();
+            Servo4_LittleAllOpen();
+            task2_capture_index = 0U;
+            task2_place_index = 0U;
+            task2_collect_complete = 0U;
+            task2_collect_done = 0U;
+            trophy_det_count = 0U;
+            trophy_det_confirm = 0U;
+            trophy_det_last_seq = 0U;
+            trophy_det_gap_until_ms = 0U;
+            trophy_detect_armed = 1U;
+            trophy_clear_frames = 0U;
+            trophy_last_rank = 0U;
+            trophy_last_slot = 0U;
+#if TASK2_ONLY_TEST_MODE
+            task2_prep_step = 1U;  /* 等QR扫描完成 */
+#else
+            task2_prep_step = 2U;  /* 跳过QR等待, 直接缓降 */
+#endif
+            lcd_div = 0;
+            ChassisPos_DrawStatus(1, "T2 Prepare");
+        }
+#if TASK2_ONLY_TEST_MODE
+        else if (task2_prep_step == 1U)
+        {
+            CompetitionQrStatus qr;
+
+            CompetitionQr_Process();
+            qr = CompetitionQr_GetStatus();
+            if ((qr == COMP_QR_READY) || (qr == COMP_QR_DEFAULTED))
+            {
+                task2_prep_step = 2U;
+                ChassisPos_DrawStatus(1, "T2 QR OK");
+            }
+        }
+#endif
+        else
+        {
+            tgt = Task1Mechanism_GetWorkingPose();
+            if (Servo4_ArmRampTick(tgt->big_arm_us, tgt->small_arm_us))
+            {
+                ChassisPos_ResetEncoder();
+                ChassisPos_ResetVelocityPid();
+                HWT101_getAngle_Reset();
+                HeadingHold_Reset();
+#if TASK2_ONLY_TEST_MODE
+                /* 测试模式: 先走 TRACK_RETURN 收集奖杯 */
+                marker_suppress_ticks = 0;
+                (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
+                (void)MaxiCam_SetMode(MAXICAM_MODE_TROPHY_WHITE);
+                __disable_irq();
+                route_state = ROUTE_TRACK_RETURN;
+                __enable_irq();
+                task2_prep_step = 0U;
+                mode_entry_tick = 0;
+                lcd_div = 0;
+                ChassisPos_DrawStatus(1, "T2 Collect");
+#else
+                trophy_phase = 0;
+                trophy_ticks = 0;
+                trophy_cam_mode_on = 0U;
+                __disable_irq();
+                route_state = ROUTE_TROPHY;
+                __enable_irq();
+                task2_prep_step = 0U;
+                mode_entry_tick = 0;
+                lcd_div = 0;
+                ChassisPos_DrawStatus(1, "T2 Capture");
+#endif
+            }
         }
         return;
     }
@@ -1399,7 +2179,15 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
             }
             else
             {
-                pause_next_mode = ROUTE_FINAL_ROTATE_180;
+                /* 任务2: 不再走原ROUTE_FINAL_ROTATE_180→TRACK_RETURN,
+                 * 直接进入 TASK2_PREPARE → 收集 → 放置 → 回Home */
+                task2_prep_step = 0U;
+                route_state = ROUTE_TASK2_PREPARE;
+                mode_entry_tick = 0;
+                lcd_div = 0;
+                ChassisPos_DrawStatus(1, "T2 Prepare");
+                Move_Control(0, 0, 0, 0);
+                return;
             }
             route_state = ROUTE_PAUSE_GENERIC;
             mode_entry_tick = 0;
@@ -1499,32 +2287,51 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
         }
     }
 
+    if (route_state == ROUTE_PLACE_ERROR)
+    {
+        LineFollow_Stop();
+    }
+
+    if (route_state == ROUTE_TASK2_PREPARE)
+    {
+        LineFollow_Stop();
+    }
+
+    if (route_state == ROUTE_MISSION_DONE)
+    {
+        LineFollow_Stop();
+    }
+
     if (route_state == ROUTE_TROPHY)
     {
         int hc;
 
-        if (trophy_phase == 0 || trophy_phase == 4
-            || trophy_phase == 6 || trophy_phase == 8 || trophy_phase == 10)
+#if TASK2_ONLY_TEST_MODE
+        /* ================================================================
+         * 测试模式放置流程
+         * Phase 0: 停车暂停
+         * Phase 1: 向右旋转90°
+         * Phase 2: 后退24cm
+         * Phase 3: 放置 B (亚军) — PODIUM 姿态
+         * Phase 4: CHAMPION 姿态 → 放置 A (冠军)
+         * Phase 5: CHAMPION 姿态 → 放置 C (季军)
+         * Phase 6: MISSION_DONE
+         * ================================================================ */
+        if (trophy_phase == 0)
         {
             LineFollow_Stop();
-            if (trophy_phase != 10 && ++trophy_ticks >= TROPHY_PAUSE_TICKS)
+            if (++trophy_ticks >= TROPHY_PAUSE_TICKS)
             {
                 ChassisPos_ResetVelocityPid();
                 ChassisPos_ResetEncoder();
                 HWT101_getAngle_Reset();
                 HeadingHold_Reset();
-                trophy_ticks = 0;
-                trophy_phase++;
-                if ((trophy_phase == 5U) ||
-                    (trophy_phase == 7U) ||
-                    (trophy_phase == 9U))
-                {
-                    vision_next_mode = ROUTE_TROPHY;
-                    vision_started = 0U;
-                    vision_job = VISION_JOB_TROPHY;
-                    route_state = ROUTE_VISION_ALIGN;
-                    ChassisPos_DrawStatus(1, "Vision Align");
-                }
+                Servo4_LittleAllClose();
+                Servo4_RotationLockNow();
+                trophy_ticks = 0U;
+                trophy_place_step = PLACE_MOVE_LEFT;
+                trophy_place_back_active = 0U;
+                trophy_phase = 1;
             }
         }
         else if (trophy_phase == 1)
@@ -1538,7 +2345,6 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                 ChassisPos_ResetEncoder();
                 HWT101_getAngle_Reset();
                 HeadingHold_Reset();
-                Servo4_UseTrophyPose(TROPHY_POSE_PODIUM);
                 trophy_phase = 2;
             }
             else
@@ -1549,92 +2355,137 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                 wheel_target[4] = -TROPHY_ROTATE_SPEED;
             }
         }
-        else if ((trophy_phase == 3U) || (trophy_phase == 5U) || (trophy_phase == 7U))
+        else if (trophy_phase == 2)
         {
-            /* 左移寻杯: 模式2(0x02)视觉找奖杯, 命中即停车夹取;
-             * 走满距离仍未见则兜底按原固定距离进入下一阶段. */
-            int hc;
-
-            if (!trophy_cam_mode_on)
-            {
-                /* 铁律: 摄像头可能仍在模式循环内, 先 0x04 退出再切 0x02 */
-                (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
-                (void)MaxiCam_SetMode(MAXICAM_MODE_ABC);
-                trophy_cam_mode_on = 1U;
-                trophy_det_confirm = 0U;
-            }
-
             if (!pos_control_active)
             {
-                int dist = (trophy_phase == 3U) ? (int)TROPHY_LEFT1_DISTANCE
-                         : (trophy_phase == 5U) ? (int)TROPHY_LEFT2_DISTANCE
-                         :                        (int)TROPHY_LEFT3_DISTANCE;
-                ChassisPos_Start(-dist, dist, -dist, dist);
+                ChassisPos_Start(-(int)TROPHY_BACK_DISTANCE,
+                                 -(int)TROPHY_BACK_DISTANCE,
+                                 -(int)TROPHY_BACK_DISTANCE,
+                                 -(int)TROPHY_BACK_DISTANCE);
             }
-
-            if (TrophyDetect_Seen() && (trophy_det_count < TROPHY_DETECT_COUNT))
-                trophy_det_count++;
-
-            if (trophy_det_count >= TROPHY_DETECT_COUNT)
+            hc = HeadingHold_GetFreshCorrection();
+            if (ChassisPos_Update(TROPHY_BACK_SPEED, 0, hc))
             {
-                /* 识别满3次: 停车, 小爪子全部夹住 */
                 LineFollow_Stop();
                 ChassisPos_ResetVelocityPid();
-                Servo4_LittleAllClose();
-                trophy_cam_mode_on = 0U;
                 trophy_ticks = 0U;
-                trophy_phase++;
-            }
-            else
-            {
-                hc = HeadingHold_GetFreshCorrection();
-                if (ChassisPos_Update(0, TROPHY_LEFT_SPEED, hc))
-                {
-                    LineFollow_Stop();
-                    ChassisPos_ResetVelocityPid();
-                    trophy_cam_mode_on = 0U;
-                    trophy_ticks = 0U;
-                    trophy_phase++;
-                }
+                trophy_place_step = PLACE_MOVE_LEFT;
+                trophy_place_back_active = 0U;
+                trophy_phase = 3;
             }
         }
+        else if (trophy_phase >= 3 && trophy_phase <= 5)
+        {
+            if (TrophyPlace_Process(task2_place_index))
+            {
+                trophy_phase++;
+                trophy_place_step = PLACE_MOVE_LEFT;
+                trophy_place_settle_ticks = 0U;
+                trophy_place_back_active = 0U;
+            }
+        }
+        /* Phase 6: 三个奖杯放置完成 */
         else
         {
-            /* 阶段 2(后退) 与 9(右后撤): 盲走 */
-            int max_fwd, max_left;
-            int pos_t1, pos_t2, pos_t3, pos_t4;
-
-            if (!pos_control_active)
+            LineFollow_Stop();
+            trophy_cam_mode_on = 0U;
+            (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
+            __disable_irq();
+            route_state = ROUTE_MISSION_DONE;
+            __enable_irq();
+            mode_entry_tick = 0;
+            lcd_div = 0;
+            ChassisPos_DrawStatus(1, "T2 MISSION OK");
+        }
+#else
+        /* ---- 原有流程: 暂停 → 旋转90° → 后退 → 放置×3 → ROTATE_180 ---- */
+        /* 相位 0/4/6: 暂停 */
+        if (trophy_phase == 0 || trophy_phase == 4 || trophy_phase == 6)
+        {
+            LineFollow_Stop();
+            if (++trophy_ticks >= TROPHY_PAUSE_TICKS)
             {
-                if (trophy_phase == 2U)
-                {
-                    pos_t1 = pos_t2 = pos_t3 = pos_t4 = -(int)TROPHY_BACK_DISTANCE;
-                }
-                else
-                {
-                    int back = (int)TROPHY_FINAL_BACK_DISTANCE;
-                    int right = (int)TROPHY_FINAL_RIGHT_DISTANCE;
-                    pos_t1 =  right - back;
-                    pos_t2 = -right - back;
-                    pos_t3 =  right - back;
-                    pos_t4 = -right - back;
-                }
-                ChassisPos_Start(pos_t1, pos_t2, pos_t3, pos_t4);
-            }
-
-            if (trophy_phase == 2U)
-                { max_fwd = TROPHY_BACK_SPEED; max_left = 0; }
-            else
-                { max_fwd = TROPHY_RIGHT_BACK_SPEED; max_left = TROPHY_RIGHT_SPEED; }
-            hc = HeadingHold_GetFreshCorrection();
-            if (ChassisPos_Update(max_fwd, max_left, hc))
-            {
-                LineFollow_Stop();
                 ChassisPos_ResetVelocityPid();
-                trophy_ticks   = 0;
+                ChassisPos_ResetEncoder();
+                HWT101_getAngle_Reset();
+                HeadingHold_Reset();
+                trophy_ticks = 0;
+                trophy_place_step = PLACE_MOVE_LEFT;
+                trophy_place_back_active = 0U;
                 trophy_phase++;
             }
         }
+        /* 相位 1: 顺时针旋转 90° */
+        else if (trophy_phase == 1)
+        {
+            float a = Angle;
+            if (a < 0.0f) a = -a;
+            if (a >= TROPHY_ROTATE_ANGLE)
+            {
+                LineFollow_Stop();
+                ChassisPos_ResetVelocityPid();
+                ChassisPos_ResetEncoder();
+                HWT101_getAngle_Reset();
+                HeadingHold_Reset();
+                trophy_phase = 2;
+            }
+            else
+            {
+                wheel_target[1] =  TROPHY_ROTATE_SPEED;
+                wheel_target[2] =  TROPHY_ROTATE_SPEED;
+                wheel_target[3] = -TROPHY_ROTATE_SPEED;
+                wheel_target[4] = -TROPHY_ROTATE_SPEED;
+            }
+        }
+        /* 相位 2: 后退 24cm */
+        else if (trophy_phase == 2)
+        {
+            if (!pos_control_active)
+            {
+                ChassisPos_Start(-(int)TROPHY_BACK_DISTANCE,
+                                 -(int)TROPHY_BACK_DISTANCE,
+                                 -(int)TROPHY_BACK_DISTANCE,
+                                 -(int)TROPHY_BACK_DISTANCE);
+            }
+            hc = HeadingHold_GetFreshCorrection();
+            if (ChassisPos_Update(TROPHY_BACK_SPEED, 0, hc))
+            {
+                LineFollow_Stop();
+                ChassisPos_ResetVelocityPid();
+                trophy_ticks = 0;
+                trophy_place_step = PLACE_MOVE_LEFT;
+                trophy_place_back_active = 0U;
+                trophy_phase++;
+            }
+        }
+        else if ((trophy_phase == 3U) || (trophy_phase == 5U) || (trophy_phase == 7U))
+        {
+            if (TrophyPlace_Process(task2_place_index))
+            {
+                trophy_phase++;
+                trophy_place_step = PLACE_MOVE_LEFT;
+                trophy_place_settle_ticks = 0U;
+                trophy_place_back_active = 0U;
+            }
+        }
+        /* 相位 8: 三个奖杯放置完成 → ROTATE_180 */
+        else
+        {
+            LineFollow_Stop();
+            trophy_cam_mode_on = 0U;
+            (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
+            ChassisPos_ResetEncoder();
+            HWT101_getAngle_Reset();
+            HeadingHold_Reset();
+            __disable_irq();
+            route_state = ROUTE_FINAL_ROTATE_180;
+            __enable_irq();
+            mode_entry_tick = 0;
+            lcd_div = 0;
+            ChassisPos_DrawStatus(1, "Rotate 180 CW");
+        }
+#endif
     }
 
     if (route_state == ROUTE_VISION_ALIGN)
@@ -1702,30 +2553,153 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
     if (route_state == ROUTE_TRACK_RETURN)
     {
         int i, black_count, line_state = 0, turn_target;
+        int collect_speed;
         Sensor_Get();
 
-        /* Rear 4 sensors (5-8) all on black + suppression expired → TROPHY */
+#if TASK2_ONLY_TEST_MODE
+        /* 快慢速策略: 第一杯前580, 命中后降至200 */
+        collect_speed = (task2_capture_index == 0U)
+                      ? (int)TROPHY_GRAB_FAST_SPEED
+                      : (int)TROPHY_GRAB_SLOW_SPEED;
+
+        /* 收集阶段: 摄像头0x02检测奖杯, 记录等级→转盘槽位 */
+        if (!task2_collect_complete)
+        {
+            if (TrophyDetect_CollectSeen())
+            {
+                QrTask2Trophy rank;
+                uint8_t cap_slot;
+
+                rank = CompetitionQr_GetTask2CaptureTrophy(
+                    CompetitionQr_GetTaskCode(COMP_QR_TASK2),
+                    task2_capture_index);
+
+                if (TurntableInventory_RecordTrophyRank(
+                        (uint8_t)rank, &cap_slot))
+                {
+                    task2_capture_index++;
+                    trophy_det_count++;
+                    trophy_last_rank = (uint8_t)rank;
+                    trophy_last_slot = cap_slot;
+                    Servo4_RotationSetStep(task2_capture_index);
+                }
+
+                /* 第三个奖杯: 立即停车, 等转盘稳定后安全收尾 */
+                if (task2_capture_index >= 3U)
+                {
+                    task2_collect_complete = 1U;
+                    task2_collect_done = 0U;
+                    trophy_ticks = 0U;
+                    /* 先闭合 CH3~CH7，Task0 在0.4s后再启动。 */
+                    Servo4_LittleAllClose();
+#if TASK2_COLLECT_ONLY
+                    LineFollow_Stop();
+#endif
+                }
+
+                /* 前两杯后抑制黑线误触发；第三杯后已收集完成，
+                 * 立即允许前灰度黑线切入放置，避免4秒窗口内错过横线。 */
+                marker_suppress_ticks = -(int)MARKER_SUPPRESS_TICKS;
+            }
+        }
+
+#if !TASK2_COLLECT_ONLY
+        /* 夹爪完成闭合后抬臂, 然后允许黑线切入放置。 */
+        if (task2_collect_complete && !task2_collect_done)
+        {
+            if (++trophy_ticks >= TROPHY_GRIP_CLOSE_TICKS)
+            {
+                if (Servo4_ArmRampTick(1250U, 2000U))
+                {
+                    task2_collect_done = 1U;
+                    marker_suppress_ticks = (int)MARKER_SUPPRESS_TICKS;
+                }
+            }
+        }
+#endif
+
+        /* LCD 收集诊断: 每250ms刷新 */
+        if (++lcd_div >= 25)
+        {
+            char buf[24];
+            uint8_t qr = CompetitionQr_GetTaskCode(COMP_QR_TASK2);
+            char rc = '?';
+            if (trophy_last_rank == QR_TASK2_TROPHY_CHAMPION)  rc = 'A';
+            else if (trophy_last_rank == QR_TASK2_TROPHY_RUNNER_UP) rc = 'B';
+            else if (trophy_last_rank == QR_TASK2_TROPHY_THIRD_PLACE) rc = 'C';
+
+            ChassisPos_DrawStatus(1, "T2 COLLECT");
+            sprintf(buf, "QR:%u C:%u/3", (unsigned)qr,(unsigned)trophy_det_count);
+            LCD_DrawString_NoDMA(1, 20, buf, LCD_WHITE, LCD_BLACK);
+            sprintf(buf, "LAST:%c SLOT:%u", rc, (unsigned)trophy_last_slot);
+            LCD_DrawString_NoDMA(1, 40, buf, LCD_WHITE, LCD_BLACK);
+            sprintf(buf, "SPD:%d", collect_speed);
+            LCD_DrawString_NoDMA(1, 60, buf, LCD_WHITE, LCD_BLACK);
+            lcd_div = 0;
+        }
+
+#if TASK2_COLLECT_ONLY
+        /* 仅收集模式: 停稳 → 等转盘80tick → 夹紧 → 锁死 → 关摄像头 → MISSION_DONE */
+        if (task2_collect_complete && !task2_collect_done)
+        {
+            if (++trophy_ticks >= TROPHY_PLACE_SETTLE_TICKS)
+            {
+                Servo4_LittleAllClose();
+                Servo4_RotationLockNow();
+                task2_collect_done = 1U;
+                (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
+                __disable_irq();
+                route_state = ROUTE_MISSION_DONE;
+                __enable_irq();
+                mode_entry_tick = 0;
+                lcd_div = 0;
+                ChassisPos_DrawStatus(1, "T2 COLL DONE");
+                Move_Control(0, 0, 0, 0);
+                goto skip_track_return;
+            }
+            goto skip_track_return;
+        }
+#endif
+#else
+        collect_speed = (int)LINE_FOLLOW_SPEED_TARGET;
+#endif /* TASK2_ONLY_TEST_MODE */
+
+        /* 前灰度右四路(5~8)全黑：先停车，再进入右转90°放置流程。 */
         if (GS_state[5] && GS_state[6] && GS_state[7] && GS_state[8]
             && marker_suppress_ticks >= MARKER_SUPPRESS_TICKS)
         {
-            ChassisPos_ResetVelocityPid();
-            HeadingHold_Reset();
-            LineFollow_Stop();
-            ChassisPos_ResetEncoder();
-            HWT101_getAngle_Reset();
-            trophy_phase = 0;
-            trophy_ticks = 0;
-            trophy_cam_mode_on = 0U;
-            trophy_det_confirm = 0U;
-            trophy_det_last_seq = 0U;
-            trophy_det_count = 0U;
-            trophy_det_gap_until_ms = 0U;
-            route_state = ROUTE_TROPHY;
-            mode_entry_tick = 0;
-            lcd_div = 0;
-            ChassisPos_DrawStatus(1, "TROPHY - STOP");
-            Move_Control(0, 0, 0, 0);
-            goto skip_track_return;
+#if TASK2_ONLY_TEST_MODE
+            if (!task2_collect_complete)
+            {
+                /* 未收集完, 忽略此标记继续巡线 */
+                marker_suppress_ticks = -(int)MARKER_SUPPRESS_TICKS;
+            }
+            else
+#endif
+            {
+                ChassisPos_ResetVelocityPid();
+                HeadingHold_Reset();
+                LineFollow_Stop();
+                ChassisPos_ResetEncoder();
+                HWT101_getAngle_Reset();
+                trophy_phase = 0;
+                trophy_ticks = 0;
+                trophy_cam_mode_on = 0U;
+                trophy_place_step = PLACE_MOVE_LEFT;
+                trophy_place_settle_ticks = 0U;
+                trophy_place_back_active = 0U;
+                trophy_det_confirm = 0U;
+                trophy_det_last_seq = 0U;
+                trophy_det_count = 0U;
+                trophy_det_gap_until_ms = 0U;
+                (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
+                route_state = ROUTE_TROPHY;
+                mode_entry_tick = 0;
+                lcd_div = 0;
+                ChassisPos_DrawStatus(1, "T2 Place");
+                Move_Control(0, 0, 0, 0);
+                goto skip_track_return;
+            }
         }
 
         black_count = GS_state[1] + GS_state[2] + GS_state[3] + GS_state[4]
@@ -1742,12 +2716,20 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
         debug_line_state = line_state;
         debug_turn_target = turn_target;
         /* 左右列差速转向：W1/W2同侧，W3/W4同侧 */
-        LineFollow_SetWheelTargets(LINE_FOLLOW_SPEED_TARGET + turn_target,
-                                   LINE_FOLLOW_SPEED_TARGET + turn_target,
-                                   LINE_FOLLOW_SPEED_TARGET - turn_target,
-                                   LINE_FOLLOW_SPEED_TARGET - turn_target);
+        LineFollow_SetWheelTargets(collect_speed + turn_target,
+                                   collect_speed + turn_target,
+                                   collect_speed - turn_target,
+                                   collect_speed - turn_target);
         skip_track_return: ;
     }
 
+#if TASK2_ONLY_TEST_MODE && TASK2_MOTOR_DISABLE
+    /* 原地联调仍保留 TIM7 内的摄像头、计数和转盘状态机，
+     * 只在最终电机输出口将四轮目标强制清零。 */
+    wheel_target[1] = 0;
+    wheel_target[2] = 0;
+    wheel_target[3] = 0;
+    wheel_target[4] = 0;
+#endif
     ChassisMotor_ControlTick(wheel_target);
 }

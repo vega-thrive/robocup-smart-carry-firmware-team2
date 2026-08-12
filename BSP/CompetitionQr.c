@@ -147,11 +147,16 @@ uint8_t CompetitionQr_GetAttemptCount(void)
 uint8_t CompetitionQr_GetTask1PlaceColor(uint8_t task_code,
                                          uint8_t place_index)
 {
-    return QrMissionMap_GetTask1Color(task_code, place_index);
+    return QrMissionMap_GetTask1RouteColor(task_code, place_index);
 }
 
-QrTask2Point CompetitionQr_GetTask2PlacePoint(uint8_t task_code,
-                                               uint8_t sequence_index)
+QrTask2Trophy CompetitionQr_GetTask2CaptureTrophy(uint8_t task_code,
+                                                  uint8_t capture_index)
 {
-    return QrMissionMap_GetTask2Point(task_code, sequence_index);
+    return QrMissionMap_GetTask2CaptureTrophy(task_code, capture_index);
+}
+
+QrTask2Trophy CompetitionQr_GetTask2PlaceTrophy(uint8_t place_index)
+{
+    return QrMissionMap_GetTask2PlaceTrophy(place_index);
 }

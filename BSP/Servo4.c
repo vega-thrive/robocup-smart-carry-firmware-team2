@@ -13,6 +13,7 @@
 #define ROTATION_SERVO_HOME_US     840U
 #define ROTATION_SERVO_STEP_US     400U
 #define ROTATION_SERVO_MAX_STEP      4U
+#define TROPHY_ROTATION_SAFE_US    840U  /* 杯间运输安全位置, 独立于 HOME 可标定 */
 
 typedef struct
 {
@@ -236,6 +237,40 @@ uint8_t Servo4_ArmRampTick(uint16_t tgt0_us, uint16_t tgt1_us)
     return done;
 }
 
+/* 慢速缓降/缓升, 2us/15ms, 非阻塞, 用于奖杯放置防止动作过快.
+ * 与 ArmRampTick 逻辑相同, 仅步长减半. */
+uint8_t Servo4_ArmRampTickSlow(uint16_t tgt0_us, uint16_t tgt1_us)
+{
+    uint16_t cur0 = servo4_pulse[0U], cur1 = servo4_pulse[1U];
+    uint8_t done = 1U;
+
+    if (cur0 < tgt0_us) { cur0 += 2U; if (cur0 > tgt0_us) cur0 = tgt0_us; done = 0U; }
+    else if (cur0 > tgt0_us) { cur0 -= 2U; if (cur0 < tgt0_us) cur0 = tgt0_us; done = 0U; }
+    if (cur1 < tgt1_us) { cur1 += 2U; if (cur1 > tgt1_us) cur1 = tgt1_us; done = 0U; }
+    else if (cur1 > tgt1_us) { cur1 -= 2U; if (cur1 < tgt1_us) cur1 = tgt1_us; done = 0U; }
+
+    Servo4_SetPulse(0U, cur0);
+    Servo4_SetPulse(1U, cur1);
+    return done;
+}
+
+/* 转盘缓变: 每次 5us, 非阻塞, 返回 1 表示已到目标.
+ * 避免 Servo4_RotationSafe() 直接跳 PWM 导致转盘横扫范围过大. */
+uint8_t Servo4_RotationRampTick(uint16_t target_us)
+{
+    uint16_t cur = servo4_pulse[ROTATION_SERVO_CHANNEL];
+    uint8_t done = 1U;
+
+    if (target_us > SERVO4_MAX_US) target_us = SERVO4_MAX_US;
+    if (target_us != 0U && target_us < SERVO4_MIN_US) target_us = SERVO4_MIN_US;
+
+    if (cur < target_us)      { cur += 5U; if (cur > target_us) cur = target_us; done = 0U; }
+    else if (cur > target_us) { cur -= 5U; if (cur < target_us) cur = target_us; done = 0U; }
+
+    Servo4_SetPulse(ROTATION_SERVO_CHANNEL, cur);
+    return done;
+}
+
 void Servo4_RotationHome(void)
 {
     rotation_pre_lock_us = 0U;  /* 回零清锁死状态 */
@@ -245,39 +280,32 @@ void Servo4_RotationHome(void)
 void Servo4_RotationSetStep(uint8_t step)
 {
     if (step > ROTATION_SERVO_MAX_STEP) step = ROTATION_SERVO_MAX_STEP;
+    /* 与任务1色块收取保持一致：直接并持续输出档位 PWM。 */
     Servo4_SetPulse(ROTATION_SERVO_CHANNEL,
                     (uint16_t)(ROTATION_SERVO_HOME_US
                                + ROTATION_SERVO_STEP_US * step));
 }
 
-/* CH2 锁死: 灰度识别到十字后、90°旋转前 PWM 减 200us 卡住物块防掉落;
- * 旋转完成后 Unlock 恢复锁死前的 PWM. */
-#define ROTATION_LOCK_DELTA_US  200U
+void Servo4_RotationSafe(void)
+{
+    rotation_pre_lock_us = 0U;  /* 回安全位清锁死状态 */
+    Servo4_SetPulse(ROTATION_SERVO_CHANNEL, TROPHY_ROTATION_SAFE_US);
+}
 
+/* CH2 锁死: 保持当前槽位 PWM 不变, 仅标记锁定状态.
+ * 不改变 PWM 值, 位置舵机偏离当前槽位反而会导致奖杯甩落. */
 void Servo4_RotationLockNow(void)
 {
-    uint16_t cur;
-
     if (rotation_pre_lock_us != 0U) return;  /* 已锁死, 不重复 */
-    cur = servo4_pulse[ROTATION_SERVO_CHANNEL];
-    if (cur > (SERVO4_MIN_US + ROTATION_LOCK_DELTA_US))
-    {
-        rotation_pre_lock_us = cur;
-        Servo4_SetPulse(ROTATION_SERVO_CHANNEL,
-                        (uint16_t)(cur - ROTATION_LOCK_DELTA_US));
-    }
+    rotation_pre_lock_us = servo4_pulse[ROTATION_SERVO_CHANNEL];
 }
 
 void Servo4_RotationUnlock(void)
 {
-    if (rotation_pre_lock_us != 0U)
-    {
-        Servo4_SetPulse(ROTATION_SERVO_CHANNEL, rotation_pre_lock_us);
-        rotation_pre_lock_us = 0U;
-    }
+    rotation_pre_lock_us = 0U;
 }
 
-/* 解锁并直接跳到目标 PWM, 跳过中间旧值, 避免转盘二次抖动 */
+/* 解锁并直接跳到目标 PWM, 跳过中间旧值, 避免转盘二次抖动. */
 void Servo4_RotationUnlockTo(uint16_t target_us)
 {
     rotation_pre_lock_us = 0U;
@@ -286,6 +314,15 @@ void Servo4_RotationUnlockTo(uint16_t target_us)
 
 /* 小爪子通道: CH3~CH7 (PA5/PA6/PA7/PC4/PC5) */
 static const uint8_t little_channels[] = {3U, 4U, 5U, 6U, 7U};
+
+/* 每槽位脱钩 PWM, 独立标定.
+ * CH3~CH7 虽同型号舵机, 但安装角度和连杆误差不同,
+ * 统一值可能导致某些槽位已完全脱开而另一个仍挂杯.
+ * 初始值 1350, 实车逐槽标定: 找到刚好脱钩值, 再额外 -30~50us. */
+static const uint16_t little_release_us[5] =
+{
+    1350U, 1320U, 1350U, 1300U, 1350U
+};
 
 void Servo4_LittleAllOpen(void)
 {
@@ -299,4 +336,28 @@ void Servo4_LittleAllClose(void)
     uint8_t i;
     for (i = 0U; i < sizeof(little_channels); i++)
         Servo4_SetPulse(little_channels[i], LITTLE_SERVO_CLOSE_US);
+}
+
+void Servo4_LittleHalfOpenSlot(uint8_t slot_index)
+{
+    if (slot_index >= sizeof(little_channels)) return;
+    Servo4_SetPulse(little_channels[slot_index], LITTLE_SERVO_HALF_OPEN_US);
+}
+
+void Servo4_LittleOpenSlot(uint8_t slot_index)
+{
+    if (slot_index >= sizeof(little_channels)) return;
+    Servo4_SetPulse(little_channels[slot_index], LITTLE_SERVO_OPEN_US);
+}
+
+void Servo4_LittleReleaseSlot(uint8_t slot_index)
+{
+    if (slot_index >= sizeof(little_channels)) return;
+    Servo4_SetPulse(little_channels[slot_index], little_release_us[slot_index]);
+}
+
+void Servo4_LittleCloseSlot(uint8_t slot_index)
+{
+    if (slot_index >= sizeof(little_channels)) return;
+    Servo4_SetPulse(little_channels[slot_index], LITTLE_SERVO_CLOSE_US);
 }
