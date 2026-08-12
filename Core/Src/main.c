@@ -425,6 +425,10 @@ int main(void)
 #else
     /* Init Servo (TIM9 software PWM) */
     Servo4_Init();
+    /* CH3..CH7 must be open as soon as the controller powers up, including
+     * while waiting for the start button.  Task2 changes to its calibrated
+     * open value at entry and closes only after all trophies are collected. */
+    Servo4_LittleAllOpen();
 
     /* Init Motor & Encoder */
     ChassisMotor_Init(0.62f, 0.06f, 0.00f);

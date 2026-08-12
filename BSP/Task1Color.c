@@ -18,6 +18,8 @@ static uint8_t active;
 static uint8_t count;
 static uint8_t seen[TASK1_COLOR_COUNT];
 static uint32_t last_sequence;
+static uint8_t last_code;
+static uint8_t last_result; /* 0=waiting, 1=accepted, 2=duplicate, 3=inventory reject */
 
 static uint8_t ColorToIndex(uint8_t code)
 {
@@ -34,6 +36,8 @@ void Task1Color_Start(void)
     for (i = 0U; i < TASK1_COLOR_COUNT; i++)
         seen[i] = 0U;
     last_sequence = 0U;
+    last_code = 0U;
+    last_result = 0U;
     Servo4_RotationHome();
     (void)MaxiCam_SetMode(MAXICAM_MODE_COLOR);
 }
@@ -56,20 +60,25 @@ void Task1Color_Process(void)
     if (!MaxiCam_GetLatest(&frame, TASK1_FRAME_MAX_AGE)) return;
     if (frame.sequence == last_sequence) return;
     last_sequence = frame.sequence;
+    last_code = frame.data[0];
 
     idx = ColorToIndex(frame.data[0]);
     if (idx >= TASK1_COLOR_COUNT) return;
-    if (seen[idx]) return;
+    if (seen[idx]) { last_result = 2U; return; }
 
     {
         uint8_t captured_slot;
         if (!TurntableInventory_RecordColor(frame.data[0], &captured_slot))
+        {
+            last_result = 3U;
             return;
+        }
     }
 
     seen[idx] = 1U;
     count++;
     Servo4_RotationSetStep(count);
+    last_result = 1U;
 
     if (count >= TASK1_COLOR_COUNT)
     {
@@ -77,3 +86,7 @@ void Task1Color_Process(void)
         (void)MaxiCam_SetMode(MAXICAM_MODE_CIRCLE);
     }
 }
+
+uint8_t Task1Color_GetCount(void) { return count; }
+uint8_t Task1Color_GetLastCode(void) { return last_code; }
+uint8_t Task1Color_GetLastResult(void) { return last_result; }

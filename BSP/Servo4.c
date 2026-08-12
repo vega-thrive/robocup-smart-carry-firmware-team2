@@ -241,8 +241,21 @@ uint8_t Servo4_ArmRampTick(uint16_t tgt0_us, uint16_t tgt1_us)
  * 与 ArmRampTick 逻辑相同, 仅步长减半. */
 uint8_t Servo4_ArmRampTickSlow(uint16_t tgt0_us, uint16_t tgt1_us)
 {
+    static uint8_t slow_divider = 0U;
     uint16_t cur0 = servo4_pulse[0U], cur1 = servo4_pulse[1U];
     uint8_t done = 1U;
+
+    /* This function is called by the 200 Hz route state machine.  Advance
+     * only once every three calls so the physical rate is really 2 us/15 ms,
+     * rather than the previous accidental 2 us/5 ms. */
+    if ((cur0 == tgt0_us) && (cur1 == tgt1_us))
+    {
+        slow_divider = 0U;
+        return 1U;
+    }
+    if (++slow_divider < 3U)
+        return 0U;
+    slow_divider = 0U;
 
     if (cur0 < tgt0_us) { cur0 += 2U; if (cur0 > tgt0_us) cur0 = tgt0_us; done = 0U; }
     else if (cur0 > tgt0_us) { cur0 -= 2U; if (cur0 < tgt0_us) cur0 = tgt0_us; done = 0U; }
@@ -255,7 +268,7 @@ uint8_t Servo4_ArmRampTickSlow(uint16_t tgt0_us, uint16_t tgt1_us)
 }
 
 /* 转盘缓变: 每次 5us, 非阻塞, 返回 1 表示已到目标.
- * 避免 Servo4_RotationSafe() 直接跳 PWM 导致转盘横扫范围过大. */
+ * 避免 Servo4_TrophyRotationSafe() 直接跳 PWM 导致转盘横扫范围过大. */
 uint8_t Servo4_RotationRampTick(uint16_t target_us)
 {
     uint16_t cur = servo4_pulse[ROTATION_SERVO_CHANNEL];
@@ -286,30 +299,56 @@ void Servo4_RotationSetStep(uint8_t step)
                                + ROTATION_SERVO_STEP_US * step));
 }
 
-void Servo4_RotationSafe(void)
-{
-    rotation_pre_lock_us = 0U;  /* 回安全位清锁死状态 */
-    Servo4_SetPulse(ROTATION_SERVO_CHANNEL, TROPHY_ROTATION_SAFE_US);
-}
-
-/* CH2 锁死: 保持当前槽位 PWM 不变, 仅标记锁定状态.
- * 不改变 PWM 值, 位置舵机偏离当前槽位反而会导致奖杯甩落. */
-void Servo4_RotationLockNow(void)
-{
-    if (rotation_pre_lock_us != 0U) return;  /* 已锁死, 不重复 */
-    rotation_pre_lock_us = servo4_pulse[ROTATION_SERVO_CHANNEL];
-}
-
-void Servo4_RotationUnlock(void)
-{
-    rotation_pre_lock_us = 0U;
-}
-
 /* 解锁并直接跳到目标 PWM, 跳过中间旧值, 避免转盘二次抖动. */
 void Servo4_RotationUnlockTo(uint16_t target_us)
 {
     rotation_pre_lock_us = 0U;
     Servo4_SetPulse(ROTATION_SERVO_CHANNEL, target_us);
+}
+
+/* =================================================================== *
+ *  任务1 转盘锁死 (f75c177 基线: PWM-200 物理锁死, Unlock 恢复)
+ * =================================================================== */
+
+#define ROTATION_LOCK_DELTA_US  200U
+
+void Servo4_Task1RotationLockNow(void)
+{
+    uint16_t cur;
+
+    if (rotation_pre_lock_us != 0U) return;  /* 已锁死, 不重复 */
+    cur = servo4_pulse[ROTATION_SERVO_CHANNEL];
+    if (cur > (SERVO4_MIN_US + ROTATION_LOCK_DELTA_US))
+    {
+        rotation_pre_lock_us = cur;
+        Servo4_SetPulse(ROTATION_SERVO_CHANNEL,
+                        (uint16_t)(cur - ROTATION_LOCK_DELTA_US));
+    }
+}
+
+void Servo4_Task1RotationUnlock(void)
+{
+    if (rotation_pre_lock_us != 0U)
+    {
+        Servo4_SetPulse(ROTATION_SERVO_CHANNEL, rotation_pre_lock_us);
+        rotation_pre_lock_us = 0U;
+    }
+}
+
+/* =================================================================== *
+ *  任务2 转盘锁死 (07409af 基线: 仅记录状态, 不改变 PWM)
+ * =================================================================== */
+
+void Servo4_TrophyRotationLock(void)
+{
+    if (rotation_pre_lock_us != 0U) return;  /* 已锁死, 不重复 */
+    rotation_pre_lock_us = servo4_pulse[ROTATION_SERVO_CHANNEL];
+}
+
+void Servo4_TrophyRotationSafe(void)
+{
+    rotation_pre_lock_us = 0U;
+    Servo4_SetPulse(ROTATION_SERVO_CHANNEL, TROPHY_ROTATION_SAFE_US);
 }
 
 /* 小爪子通道: CH3~CH7 (PA5/PA6/PA7/PC4/PC5) */
@@ -338,22 +377,53 @@ void Servo4_LittleAllClose(void)
         Servo4_SetPulse(little_channels[i], LITTLE_SERVO_CLOSE_US);
 }
 
-void Servo4_LittleHalfOpenSlot(uint8_t slot_index)
+/* =================================================================== *
+ *  任务2 小舵机统控 (07409af 基线: OPEN=1450, CLOSE=2060)
+ * =================================================================== */
+
+void Servo4_TrophyLittleAllOpen(void)
 {
-    if (slot_index >= sizeof(little_channels)) return;
-    Servo4_SetPulse(little_channels[slot_index], LITTLE_SERVO_HALF_OPEN_US);
+    uint8_t i;
+    for (i = 0U; i < sizeof(little_channels); i++)
+        Servo4_SetPulse(little_channels[i], TROPHY_LITTLE_OPEN_US);
 }
 
+void Servo4_TrophyLittleAllClose(void)
+{
+    uint8_t i;
+    for (i = 0U; i < sizeof(little_channels); i++)
+        Servo4_SetPulse(little_channels[i], TROPHY_LITTLE_CLOSE_US);
+}
+
+void Servo4_TrophyLittleHalfOpenSlot(uint8_t slot_index)
+{
+    if (slot_index >= sizeof(little_channels)) return;
+    Servo4_SetPulse(little_channels[slot_index], TROPHY_LITTLE_HALF_OPEN_US);
+}
+
+void Servo4_TrophyLittleOpenSlot(uint8_t slot_index)
+{
+    if (slot_index >= sizeof(little_channels)) return;
+    Servo4_SetPulse(little_channels[slot_index], TROPHY_LITTLE_OPEN_US);
+}
+
+void Servo4_TrophyLittleReleaseSlot(uint8_t slot_index)
+{
+    if (slot_index >= sizeof(little_channels)) return;
+    Servo4_SetPulse(little_channels[slot_index], little_release_us[slot_index]);
+}
+
+void Servo4_TrophyLittleCloseSlot(uint8_t slot_index)
+{
+    if (slot_index >= sizeof(little_channels)) return;
+    Servo4_SetPulse(little_channels[slot_index], TROPHY_LITTLE_CLOSE_US);
+}
+
+/* 任务1 按槽位操作 (LITTLE_GRIPPER_SEQ_TEST 等调试用) */
 void Servo4_LittleOpenSlot(uint8_t slot_index)
 {
     if (slot_index >= sizeof(little_channels)) return;
     Servo4_SetPulse(little_channels[slot_index], LITTLE_SERVO_OPEN_US);
-}
-
-void Servo4_LittleReleaseSlot(uint8_t slot_index)
-{
-    if (slot_index >= sizeof(little_channels)) return;
-    Servo4_SetPulse(little_channels[slot_index], little_release_us[slot_index]);
 }
 
 void Servo4_LittleCloseSlot(uint8_t slot_index)

@@ -13,6 +13,7 @@ typedef enum
 /* 比赛路线状态机 */
 typedef enum
 {
+    /* ---- 任务1: 已验证基线 (f75c177) ---- */
     ROUTE_HOME_LAUNCH = 0,
     ROUTE_HOME_FIXED_FORWARD,
     ROUTE_HOME_FIXED_PAUSE,
@@ -40,7 +41,18 @@ typedef enum
     ROUTE_VISION_BACK,
     ROUTE_PLACE,
     ROUTE_PLACE_ERROR,
+
+    /* ---- 过渡 ---- */
+    ROUTE_TASK1_TO_TASK2,
+
+    /* ---- 任务2: 已验证基线 (07409af, TASK2_ONLY_TEST_MODE=1) ---- */
     ROUTE_TASK2_PREPARE,
+
+    /* ---- 回家 ---- */
+    ROUTE_HOME_RIGHT_SHIFT,
+    ROUTE_HOME_RETURN_ALIGN,
+    ROUTE_HOME_RETURN_DRIVE,
+
     ROUTE_MISSION_DONE
 } RouteState;
 

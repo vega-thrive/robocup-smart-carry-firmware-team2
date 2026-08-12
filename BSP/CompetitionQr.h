@@ -22,6 +22,7 @@ typedef enum
 void CompetitionQr_Init(UART_HandleTypeDef *uart);
 void CompetitionQr_RequestStart(CompetitionQrTask task);
 void CompetitionQr_Process(void);
+void CompetitionQr_ForceDefault(CompetitionQrTask task);
 CompetitionQrStatus CompetitionQr_GetStatus(void);
 uint8_t CompetitionQr_GetTaskCode(CompetitionQrTask task);
 uint8_t CompetitionQr_GetAttemptCount(void);

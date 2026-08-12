@@ -42,7 +42,23 @@
 #define HOME_FIXED_LEFTBACK_LEFT_DIST  77700 /* about 4.2 cm left */
 #define HOME_FIXED_SETTLE_TICKS       30    /* 150 ms */
 
+/* Fast return after Task2: align to the absolute heading saved in Home,
+ * then drive straight by encoder with gyro heading hold. */
+#define HOME_RETURN_SPEED             400
+#define HOME_RETURN_DISTANCE       410700  /* reverse about 222 cm; tune here */
+#define HOME_RIGHT_SHIFT_DISTANCE   22200  /* 12 cm pure right move */
+#define HOME_RIGHT_SHIFT_SPEED        180  /* lateral speed for right shift */
+#define HOME_RETURN_MARKER_ARM      37000  /* ignore podium line for first 20 cm */
+#define HOME_RETURN_ALIGN_TIMEOUT     400  /* 2 s at 200 Hz */
+#define HOME_RETURN_ALIGN_STABLE        3  /* fresh gyro frames within 2 deg */
+
 #define MARKER_SUPPRESS_TICKS   400  /* TRACK_RETURN only: 2 s */
+
+/* Task2 entry: left move before 179 deg rotation to face return track */
+#define TASK2_ENTRY_LEFT_DISTANCE   37000  /* ~2.0 cm lateral, tune on-car */
+#define TASK2_ENTRY_LEFT_SPEED        320
+#define TASK2_ENTRY_SETTLE_TICKS       40  /* 200 ms at 200 Hz */
+#define TASK2_TRANSITION_QR_TIMEOUT_TICKS  800U  /* ~4 s at 200 Hz */
 
 /* Trophy route: pause, rotate CW, reverse, then three stepped left moves. */
 #define TROPHY_PAUSE_TICKS          100  /* 0.5 s at 200 Hz */
@@ -68,7 +84,6 @@
 #define TROPHY_GRIP_CLOSE_TICKS       80  /* 0.4s at 200Hz: close claws before Task0 */
 #define TROPHY_RIGHT_BACK_SPEED     420
 #define TROPHY_RIGHT_SPEED           46
-#define TROPHY_FINAL_BACK_DISTANCE 410700 /* 222 cm x 1850 counts/cm */
 #define TROPHY_FINAL_RIGHT_DISTANCE 46250  /* calibrated 2.5 cm lateral travel */
 
 /* Trophy visual search (camera mode 2, 0x02): jiang_bei = code 26.
@@ -98,10 +113,10 @@
 #define CURVE_RIGHT_MOVE_SPEED     130  /* 斜向前进横向速度 */
 #define CURVE_ENCODER_COUNTS      77700  /* 前向 42 cm × 1850 */
 
-/* 视觉对准完成后: 固定航向直进 2.2cm, 再后退 12.7cm */
+/* 视觉对准完成后: 固定航向直进 2.2cm, 再后退 2.7cm */
 #define VISION_FORWARD_SPEED     250
 #define VISION_FORWARD_DISTANCE 4070   /* 2.2 cm × 1850 counts/cm */
-#define VISION_BACK_DISTANCE   23495   /* 12.7 cm × 1850 counts/cm */
+#define VISION_BACK_DISTANCE    4995   /* 2.7 cm × 1850 counts/cm */
 
 /* 放置物块: 视觉对准+直进3cm后, 转盘解锁→旋转到目标槽位→释放→锁定→后退3cm */
 #define PLACE_DEFAULT_COLOR      21U   /* 默认放置颜色码, 后续按需修改 */

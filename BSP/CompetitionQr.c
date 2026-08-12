@@ -128,6 +128,19 @@ void CompetitionQr_Process(void)
     }
 }
 
+void CompetitionQr_ForceDefault(CompetitionQrTask task)
+{
+    if ((task != COMP_QR_TASK1) && (task != COMP_QR_TASK2))
+        return;
+
+    competition_qr_task = task;
+    competition_qr_code = 1U;
+    competition_qr_task_codes[(uint8_t)task - 1U] = 1U;
+    competition_qr_task_defaulted[(uint8_t)task - 1U] = 1U;
+    competition_qr_start_pending = 0U;
+    competition_qr_status = COMP_QR_DEFAULTED;
+}
+
 CompetitionQrStatus CompetitionQr_GetStatus(void)
 {
     return competition_qr_status;

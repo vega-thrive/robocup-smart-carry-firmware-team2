@@ -1,27 +1,68 @@
 #include "VisionAlignment.h"
 #include "MaxiCam.h"
 
+/* 共享常量 (两套配置不变) */
 #define ALIGN_TARGET_X       80
 #define ALIGN_TARGET_Y       60
-#define ALIGN_ENTER_BAND      10   /* ±10px: 判定完成 */
-#define ALIGN_HYSTERESIS      14   /* 进入后误差需超过±14px才允许再调 */
-#define ALIGN_COARSE_ERROR    18   /* >18px: 编码器闭环粗调 */
-#define ALIGN_MIN_SPEED       80
-#define ALIGN_MAX_SPEED       90
-#define ALIGN_FINE_SPEED      80
 #define ALIGN_KP              5
-#define ALIGN_X_MOVE_SIGN    -1
-#define ALIGN_Y_MOVE_SIGN    -1
 #define ALIGN_FRAME_MAX_AGE 800U
-#define ALIGN_TIMEOUT_MS    2500U
-#define ALIGN_COARSE_PX_TO_COUNTS 70   /* 1px ≈ 70 counts (0.38mm) */
-#define ALIGN_COARSE_MIN     1110       /* 6mm 下限 */
-#define ALIGN_COARSE_MAX     2775       /* 15mm 上限 */
-#define ALIGN_FINE_PULSE_MS   35U
-#define ALIGN_FINE_SETTLE_MS 100U
-#define ALIGN_FINISH_HOLD_MS  60U
-#define ALIGN_MAX_PULSES       4U
 
+/* =================================================================== *
+ *  配置实例: 任务1 (f75c177 基线) / 任务2 (07409af 基线)
+ * =================================================================== */
+
+const VisionProfileCfg vision_cfg_task1 =
+{
+    .enter_band       = 7,
+    .hysteresis       = 0,
+    .coarse_error     = 10,   /* Task1: 速度切换阈值, 非粗调 */
+    .min_speed        = 80,
+    .max_speed        = 110,
+    .fine_speed       = 100,
+    .x_move_sign      = -1,
+    .y_move_sign      = -1,
+    .timeout_ms       = 12000U,
+    .fine_pulse_ms    = 50U,
+    .fine_settle_ms   = 120U,
+    .finish_hold_ms   = 180U,
+    .max_pulses       = 0,    /* 不限 */
+    .use_hysteresis   = 0,
+    .use_coarse       = 0,
+    .use_kp_speed     = 1,
+    .coarse_px_to_counts = 0,
+    .coarse_min       = 0,
+    .coarse_max       = 0,
+};
+
+const VisionProfileCfg vision_cfg_trophy =
+{
+    .enter_band       = 10,
+    .hysteresis       = 14,
+    .coarse_error     = 18,
+    .min_speed        = 80,
+    .max_speed        = 90,
+    .fine_speed       = 80,
+    .x_move_sign      = -1,
+    .y_move_sign      = -1,
+    .timeout_ms       = 2500U,
+    .fine_pulse_ms    = 35U,
+    .fine_settle_ms   = 100U,
+    .finish_hold_ms   = 60U,
+    .max_pulses       = 4U,
+    .use_hysteresis   = 1,
+    .use_coarse       = 1,
+    .use_kp_speed     = 0,
+    .coarse_px_to_counts = 70,
+    .coarse_min       = 1110,
+    .coarse_max       = 2775,
+};
+
+/* =================================================================== *
+ *  运行时状态
+ * =================================================================== */
+
+static const VisionProfileCfg *active_cfg;
+static VisionProfile active_profile_type;
 static volatile VisionAlignment_Status align_status;
 static volatile int align_target[4];
 static uint32_t align_started_ms;
@@ -35,10 +76,10 @@ static uint32_t align_pulse_until_ms;
 static uint32_t align_settle_until_ms;
 static uint32_t align_finish_at_ms;
 static uint8_t  align_pulse_count;
-static uint8_t  align_in_band;          /* 滞环: 是否曾进入允许范围 */
-static uint8_t  align_coarse_pending;   /* 粗调待执行 */
-static uint8_t  align_coarse_axis;      /* 0=Y(前后), 1=X(左右) */
-static int16_t  align_coarse_dist;      /* 编码器 counts, 带符号 */
+static uint8_t  align_in_band;
+static uint8_t  align_coarse_pending;
+static uint8_t  align_coarse_axis;
+static int16_t  align_coarse_dist;
 
 volatile uint8_t  vision_diag_code;
 volatile uint8_t  vision_diag_mode;
@@ -46,6 +87,10 @@ volatile uint8_t  vision_diag_x;
 volatile uint8_t  vision_diag_y;
 volatile uint32_t vision_diag_seq;
 volatile uint32_t vision_diag_age_ms;
+
+/* =================================================================== *
+ *  辅助
+ * =================================================================== */
 
 static uint8_t VisionAlignment_Median3(const uint8_t value[3])
 {
@@ -58,12 +103,13 @@ static uint8_t VisionAlignment_Median3(const uint8_t value[3])
     return b;
 }
 
-static int VisionAlignment_Speed(int error)
+/* Task1 KP比例速度 */
+static int VisionAlignment_Speed(int error, const VisionProfileCfg *cfg)
 {
     int magnitude = (error >= 0) ? error : -error;
     int speed = magnitude * ALIGN_KP;
-    if (speed < ALIGN_MIN_SPEED) speed = ALIGN_MIN_SPEED;
-    if (speed > ALIGN_MAX_SPEED) speed = ALIGN_MAX_SPEED;
+    if (speed < (int)cfg->min_speed) speed = (int)cfg->min_speed;
+    if (speed > (int)cfg->max_speed) speed = (int)cfg->max_speed;
     return (error >= 0) ? speed : -speed;
 }
 
@@ -78,9 +124,15 @@ static void VisionAlignment_SetTarget(int forward, int left)
     if (primask == 0U) __enable_irq();
 }
 
+/* =================================================================== *
+ *  公共接口
+ * =================================================================== */
+
 void VisionAlignment_Init(UART_HandleTypeDef *uart)
 {
     MaxiCam_Init(uart);
+    active_cfg = &vision_cfg_task1;
+    active_profile_type = VISION_PROFILE_TASK1;
     VisionAlignment_SetTarget(0, 0);
     align_status = VISION_ALIGN_IDLE;
     align_started_ms = 0U;
@@ -97,8 +149,19 @@ void VisionAlignment_Init(UART_HandleTypeDef *uart)
     (void)MaxiCam_StartReceiveIT();
 }
 
-void VisionAlignment_Start(void)
+void VisionAlignment_Start(VisionProfile profile)
 {
+    if (profile == VISION_PROFILE_TROPHY)
+    {
+        active_cfg = &vision_cfg_trophy;
+        active_profile_type = VISION_PROFILE_TROPHY;
+    }
+    else
+    {
+        active_cfg = &vision_cfg_task1;
+        active_profile_type = VISION_PROFILE_TASK1;
+    }
+
     VisionAlignment_SetTarget(0, 0);
     align_status = VISION_ALIGN_RUNNING;
     align_started_ms = HAL_GetTick();
@@ -112,13 +175,10 @@ void VisionAlignment_Start(void)
     align_pulse_count = 0U;
     align_in_band = 0U;
     align_coarse_pending = 0U;
-    /* 铁律: 摄像头可能还在其它模式循环里(如奖杯左移后的 0x02),
-     * 0x01 会被吞掉, 必须先发 0x04 退回外层循环. */
     (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
     (void)MaxiCam_SetMode(MAXICAM_MODE_CIRCLE);
 }
 
-/* 仅复位视觉状态和计数器, 不改变摄像头模式(用于连续放置间复用 CIRCLE). */
 void VisionAlignment_Restart(void)
 {
     VisionAlignment_SetTarget(0, 0);
@@ -136,9 +196,6 @@ void VisionAlignment_Restart(void)
     align_coarse_pending = 0U;
 }
 
-/* Resume the same placement after an encoder coarse correction.  Keep the
- * original start time and correction count so a sequence of coarse moves
- * cannot bypass ALIGN_TIMEOUT_MS or ALIGN_MAX_PULSES. */
 void VisionAlignment_ResumeAfterCoarse(void)
 {
     VisionAlignment_SetTarget(0, 0);
@@ -153,19 +210,23 @@ void VisionAlignment_ResumeAfterCoarse(void)
     align_coarse_pending = 0U;
 }
 
+/* =================================================================== *
+ *  主处理: 根据 active_cfg 分叉 Task1 / Task2 算法
+ * =================================================================== */
+
 void VisionAlignment_Process(void)
 {
     MaxiCam_Frame frame;
     uint32_t now;
+    const VisionProfileCfg *cfg = active_cfg;
 
     if (align_status != VISION_ALIGN_RUNNING) { vision_diag_code = VISION_DIAG_IDLE; return; }
 
-    /* 粗调 ChassisPos 待执行: 状态机执行期间暂停视觉处理 */
     if (align_coarse_pending) { vision_diag_code = VISION_DIAG_COARSE; return; }
 
     now = HAL_GetTick();
 
-    if ((now - align_started_ms) >= ALIGN_TIMEOUT_MS)
+    if ((now - align_started_ms) >= cfg->timeout_ms)
     {
         VisionAlignment_SetTarget(0, 0);
         align_status = VISION_ALIGN_TIMEOUT;
@@ -187,7 +248,7 @@ void VisionAlignment_Process(void)
         if ((int32_t)(now - align_pulse_until_ms) < 0) { vision_diag_code = VISION_DIAG_MOVING; return; }
         VisionAlignment_SetTarget(0, 0);
         align_pulse_until_ms = 0U;
-        align_settle_until_ms = now + ALIGN_FINE_SETTLE_MS;
+        align_settle_until_ms = now + cfg->fine_settle_ms;
     }
 
     if (align_settle_until_ms != 0U)
@@ -257,119 +318,183 @@ void VisionAlignment_Process(void)
         abs_x = (error_x >= 0) ? error_x : -error_x;
         abs_y = (error_y >= 0) ? error_y : -error_y;
 
-        /* 进入允许范围: 立即停止, 设置滞环 */
-        if ((abs_x <= ALIGN_ENTER_BAND) &&
-            (abs_y <= ALIGN_ENTER_BAND))
+        /* ---- 对准判定: 进入允许范围 ---- */
+        if ((abs_x <= (int)cfg->enter_band) &&
+            (abs_y <= (int)cfg->enter_band))
         {
-            align_in_band = 1U;
+            if (cfg->use_hysteresis)
+                align_in_band = 1U;
             VisionAlignment_SetTarget(0, 0);
             vision_diag_code = VISION_DIAG_CENTERED;
             align_pulse_until_ms = 0U;
             align_settle_until_ms = 0U;
-            align_finish_at_ms = now + ALIGN_FINISH_HOLD_MS;
+            align_finish_at_ms = now + cfg->finish_hold_ms;
             return;
         }
 
-        /* 滞环: 已进入过允许范围且误差未超过回差, 保持完成 */
-        if (align_in_band &&
-            (abs_x <= ALIGN_HYSTERESIS) &&
-            (abs_y <= ALIGN_HYSTERESIS))
+        /* ---- 滞环 (Task2 only) ---- */
+        if (cfg->use_hysteresis)
         {
-            VisionAlignment_SetTarget(0, 0);
-            vision_diag_code = VISION_DIAG_CENTERED;
-            align_pulse_until_ms = 0U;
-            align_settle_until_ms = 0U;
-            align_finish_at_ms = now + ALIGN_FINISH_HOLD_MS;
-            return;
+            if (align_in_band &&
+                (abs_x <= (int)cfg->hysteresis) &&
+                (abs_y <= (int)cfg->hysteresis))
+            {
+                VisionAlignment_SetTarget(0, 0);
+                vision_diag_code = VISION_DIAG_CENTERED;
+                align_pulse_until_ms = 0U;
+                align_settle_until_ms = 0U;
+                align_finish_at_ms = now + cfg->finish_hold_ms;
+                return;
+            }
+            if ((abs_x > (int)cfg->hysteresis) ||
+                (abs_y > (int)cfg->hysteresis))
+                align_in_band = 0U;
         }
-
-        /* 误差超过滞环阈值: 清除 in_band, 允许重新调整 */
-        if ((abs_x > ALIGN_HYSTERESIS) || (abs_y > ALIGN_HYSTERESIS))
-            align_in_band = 0U;
 
         vision_diag_code = VISION_DIAG_MOVING;
 
-        /*
-         * Y 轴优先: 先修正前后方向, Y 合格后才修左右.
-         * 禁止同时修正两个方向.
-         */
-        if (abs_y > ALIGN_ENTER_BAND)
-        {
-            int move_sign = (error_y >= 0) ? ALIGN_Y_MOVE_SIGN
-                                           : -ALIGN_Y_MOVE_SIGN;
+        /* ================================================================ *
+         *  运动策略分叉
+         * ================================================================ */
 
-            if (abs_y > ALIGN_COARSE_ERROR)
+        if (abs_y > (int)cfg->enter_band)
+        {
+            int move_sign = (error_y >= 0) ? (int)cfg->y_move_sign
+                                           : -(int)cfg->y_move_sign;
+
+            if (cfg->use_coarse && abs_y > (int)cfg->coarse_error)
             {
-                /* 粗调: 编码器位置闭环 */
-                int32_t dist = (int32_t)abs_y * ALIGN_COARSE_PX_TO_COUNTS;
-                if (align_pulse_count >= ALIGN_MAX_PULSES)
+                /* ---- Task2: 编码器粗调 (Y轴) ---- */
+                int32_t dist = (int32_t)abs_y * cfg->coarse_px_to_counts;
+                if (cfg->max_pulses && align_pulse_count >= cfg->max_pulses)
                 {
                     VisionAlignment_SetTarget(0, 0);
                     align_status = VISION_ALIGN_TIMEOUT;
                     vision_diag_code = VISION_DIAG_TIMEOUT;
                     return;
                 }
-                if (dist < ALIGN_COARSE_MIN) dist = ALIGN_COARSE_MIN;
-                if (dist > ALIGN_COARSE_MAX) dist = ALIGN_COARSE_MAX;
+                if (dist < (int32_t)cfg->coarse_min) dist = (int32_t)cfg->coarse_min;
+                if (dist > (int32_t)cfg->coarse_max) dist = (int32_t)cfg->coarse_max;
                 align_pulse_count++;
-                align_coarse_dist  = (int16_t)(move_sign * dist);
-                align_coarse_axis  = 0U;  /* Y 轴 */
+                align_coarse_dist  = (int16_t)(move_sign * (int)dist);
+                align_coarse_axis  = 0U;
                 align_coarse_pending = 1U;
                 VisionAlignment_SetTarget(0, 0);
             }
             else
             {
-                /* 精调: 短时间轮速脉冲 */
-                /* move_sign already contains the error direction.  Applying
-                 * the error sign to movement again would cancel it and make
-                 * both positive and negative errors drive the same way. */
-                VisionAlignment_SetTarget(move_sign * ALIGN_FINE_SPEED, 0);
-                if (align_pulse_count >= ALIGN_MAX_PULSES)
+                /* ---- 精调 (Y轴) ---- */
+                if (cfg->use_kp_speed)
                 {
-                    VisionAlignment_SetTarget(0, 0);
-                    align_status = VISION_ALIGN_TIMEOUT;
-                    vision_diag_code = VISION_DIAG_TIMEOUT;
-                    return;
+                    /* Task1: KP比例速度, 小误差切换固定速度 */
+                    int spd;
+                    if (cfg->max_pulses && align_pulse_count >= cfg->max_pulses)
+                    {
+                        VisionAlignment_SetTarget(0, 0);
+                        align_status = VISION_ALIGN_TIMEOUT;
+                        vision_diag_code = VISION_DIAG_TIMEOUT;
+                        return;
+                    }
+                    if (abs_y <= (int)cfg->coarse_error)
+                    {
+                        spd = (error_y >= 0) ? (int)cfg->fine_speed
+                                             : -(int)cfg->fine_speed;
+                    }
+                    else
+                    {
+                        spd = VisionAlignment_Speed(error_y, cfg);
+                    }
+                    VisionAlignment_SetTarget(cfg->y_move_sign * spd, 0);
+                    if (abs_y <= (int)cfg->coarse_error)
+                    {
+                        if (cfg->max_pulses) align_pulse_count++;
+                        align_pulse_until_ms = now + cfg->fine_pulse_ms;
+                    }
                 }
-                align_pulse_count++;
-                align_pulse_until_ms = now + ALIGN_FINE_PULSE_MS;
+                else
+                {
+                    /* Task2: 固定精调速度, 脉冲限制 */
+                    if (cfg->max_pulses && align_pulse_count >= cfg->max_pulses)
+                    {
+                        VisionAlignment_SetTarget(0, 0);
+                        align_status = VISION_ALIGN_TIMEOUT;
+                        vision_diag_code = VISION_DIAG_TIMEOUT;
+                        return;
+                    }
+                    VisionAlignment_SetTarget(move_sign * (int)cfg->fine_speed, 0);
+                    align_pulse_count++;
+                    align_pulse_until_ms = now + cfg->fine_pulse_ms;
+                }
             }
         }
-        else if (abs_x > ALIGN_ENTER_BAND)
+        else if (abs_x > (int)cfg->enter_band)
         {
-            int move_sign = (error_x >= 0) ? ALIGN_X_MOVE_SIGN
-                                           : -ALIGN_X_MOVE_SIGN;
+            int move_sign = (error_x >= 0) ? (int)cfg->x_move_sign
+                                           : -(int)cfg->x_move_sign;
 
-            if (abs_x > ALIGN_COARSE_ERROR)
+            if (cfg->use_coarse && abs_x > (int)cfg->coarse_error)
             {
-                int32_t dist = (int32_t)abs_x * ALIGN_COARSE_PX_TO_COUNTS;
-                if (align_pulse_count >= ALIGN_MAX_PULSES)
+                /* ---- Task2: 编码器粗调 (X轴) ---- */
+                int32_t dist = (int32_t)abs_x * cfg->coarse_px_to_counts;
+                if (cfg->max_pulses && align_pulse_count >= cfg->max_pulses)
                 {
                     VisionAlignment_SetTarget(0, 0);
                     align_status = VISION_ALIGN_TIMEOUT;
                     vision_diag_code = VISION_DIAG_TIMEOUT;
                     return;
                 }
-                if (dist < ALIGN_COARSE_MIN) dist = ALIGN_COARSE_MIN;
-                if (dist > ALIGN_COARSE_MAX) dist = ALIGN_COARSE_MAX;
+                if (dist < (int32_t)cfg->coarse_min) dist = (int32_t)cfg->coarse_min;
+                if (dist > (int32_t)cfg->coarse_max) dist = (int32_t)cfg->coarse_max;
                 align_pulse_count++;
-                align_coarse_dist  = (int16_t)(move_sign * dist);
-                align_coarse_axis  = 1U;  /* X 轴 */
+                align_coarse_dist  = (int16_t)(move_sign * (int)dist);
+                align_coarse_axis  = 1U;
                 align_coarse_pending = 1U;
                 VisionAlignment_SetTarget(0, 0);
             }
             else
             {
-                VisionAlignment_SetTarget(0, move_sign * ALIGN_FINE_SPEED);
-                if (align_pulse_count >= ALIGN_MAX_PULSES)
+                /* ---- 精调 (X轴) ---- */
+                if (cfg->use_kp_speed)
                 {
-                    VisionAlignment_SetTarget(0, 0);
-                    align_status = VISION_ALIGN_TIMEOUT;
-                    vision_diag_code = VISION_DIAG_TIMEOUT;
-                    return;
+                    /* Task1: KP比例速度 */
+                    int spd;
+                    if (cfg->max_pulses && align_pulse_count >= cfg->max_pulses)
+                    {
+                        VisionAlignment_SetTarget(0, 0);
+                        align_status = VISION_ALIGN_TIMEOUT;
+                        vision_diag_code = VISION_DIAG_TIMEOUT;
+                        return;
+                    }
+                    if (abs_x <= (int)cfg->coarse_error)
+                    {
+                        spd = (error_x >= 0) ? (int)cfg->fine_speed
+                                             : -(int)cfg->fine_speed;
+                    }
+                    else
+                    {
+                        spd = VisionAlignment_Speed(error_x, cfg);
+                    }
+                    VisionAlignment_SetTarget(0, cfg->x_move_sign * spd);
+                    if (abs_x <= (int)cfg->coarse_error)
+                    {
+                        if (cfg->max_pulses) align_pulse_count++;
+                        align_pulse_until_ms = now + cfg->fine_pulse_ms;
+                    }
                 }
-                align_pulse_count++;
-                align_pulse_until_ms = now + ALIGN_FINE_PULSE_MS;
+                else
+                {
+                    /* Task2: 固定精调速度 */
+                    if (cfg->max_pulses && align_pulse_count >= cfg->max_pulses)
+                    {
+                        VisionAlignment_SetTarget(0, 0);
+                        align_status = VISION_ALIGN_TIMEOUT;
+                        vision_diag_code = VISION_DIAG_TIMEOUT;
+                        return;
+                    }
+                    VisionAlignment_SetTarget(0, move_sign * (int)cfg->fine_speed);
+                    align_pulse_count++;
+                    align_pulse_until_ms = now + cfg->fine_pulse_ms;
+                }
             }
         }
     }
@@ -382,8 +507,6 @@ void VisionAlignment_Cancel(void)
     align_status = VISION_ALIGN_IDLE;
 }
 
-/* 仅清零轮速和状态, 不发送摄像头 STOP.
- * 用于连续放置间切换: 保持 CIRCLE 模式不中断. */
 void VisionAlignment_Finish(void)
 {
     VisionAlignment_SetTarget(0, 0);
