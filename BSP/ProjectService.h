@@ -45,7 +45,7 @@ typedef enum
     /* ---- 过渡 ---- */
     ROUTE_TASK1_TO_TASK2,
 
-    /* ---- 任务2: 已验证基线 (07409af, TASK2_ONLY_TEST_MODE=1) ---- */
+    /* ---- 任务2：收集、放置与回家 ---- */
     ROUTE_TASK2_PREPARE,
 
     /* ---- 回家 ---- */

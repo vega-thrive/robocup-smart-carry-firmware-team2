@@ -1,6 +1,5 @@
 #include "Servo4.h"
 #include "Task1Mechanism.h"
-#include "TrophyMechanism.h"
 
 /* =================================================================== *
  *  底层：8 路舵机 TIM9 硬件 PWM (20ms 帧周期)
@@ -189,20 +188,6 @@ void Servo4_TIM9_IRQHandler(void)
  *  高层：比赛舵机姿态控制
  * =================================================================== */
 
-void Servo4_UseTask1Parameters(void)
-{
-    const Task1ArmPose *pose = Task1Mechanism_GetWorkingPose();
-    Servo4_SetPulse(0U, pose->big_arm_us);
-    Servo4_SetPulse(1U, pose->small_arm_us);
-}
-
-void Servo4_UseTrophyPose(TrophyPoseType type)
-{
-    const TrophyArmPose *pose = TrophyMechanism_GetPose(type);
-    Servo4_SetPulse(0U, pose->big_arm_us);
-    Servo4_SetPulse(1U, pose->small_arm_us);
-}
-
 /* 从当前脉宽缓降至目标, 5us/15ms, 阻塞. */
 void Servo4_ArmRampTo(uint16_t tgt0_us, uint16_t tgt1_us)
 {
@@ -323,15 +308,6 @@ void Servo4_Task1RotationLockNow(void)
         rotation_pre_lock_us = cur;
         Servo4_SetPulse(ROTATION_SERVO_CHANNEL,
                         (uint16_t)(cur - ROTATION_LOCK_DELTA_US));
-    }
-}
-
-void Servo4_Task1RotationUnlock(void)
-{
-    if (rotation_pre_lock_us != 0U)
-    {
-        Servo4_SetPulse(ROTATION_SERVO_CHANNEL, rotation_pre_lock_us);
-        rotation_pre_lock_us = 0U;
     }
 }
 

@@ -32,9 +32,11 @@ typedef enum
 /* 视觉配置参数: 任务1/任务2 独立标定, 编译期常量 */
 typedef struct
 {
-    uint8_t  enter_band;
-    uint8_t  hysteresis;
-    uint8_t  coarse_error;
+    uint16_t target_x;
+    uint16_t target_y;
+    uint16_t enter_band;
+    uint16_t hysteresis;
+    uint16_t coarse_error;
     uint8_t  min_speed;
     uint8_t  max_speed;
     uint8_t  fine_speed;
@@ -58,8 +60,8 @@ extern const VisionProfileCfg vision_cfg_trophy;
 
 extern volatile uint8_t  vision_diag_code;
 extern volatile uint8_t  vision_diag_mode;
-extern volatile uint8_t  vision_diag_x;
-extern volatile uint8_t  vision_diag_y;
+extern volatile uint16_t vision_diag_x;
+extern volatile uint16_t vision_diag_y;
 extern volatile uint32_t vision_diag_seq;
 extern volatile uint32_t vision_diag_age_ms;
 

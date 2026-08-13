@@ -82,10 +82,6 @@
 #define TROPHY_DROP_SETTLE_TICKS         100  /* 奖杯落稳 1000ms */
 #define TROPHY_LIFT_CLEAR_SETTLE_TICKS    50  /* 抬离后稳定 500ms */
 #define TROPHY_GRIP_CLOSE_TICKS       80  /* 0.4s at 200Hz: close claws before Task0 */
-#define TROPHY_RIGHT_BACK_SPEED     420
-#define TROPHY_RIGHT_SPEED           46
-#define TROPHY_FINAL_RIGHT_DISTANCE 46250  /* calibrated 2.5 cm lateral travel */
-
 /* Trophy visual search (camera mode 2, 0x02): jiang_bei = code 26.
  * Camera-side green-box confirmation already filters detections, so the MCU
  * accepts the first fresh code 26 frame.  The little grippers close only
@@ -116,7 +112,11 @@
 /* 视觉对准完成后: 固定航向直进 2.2cm, 再后退 2.7cm */
 #define VISION_FORWARD_SPEED     250
 #define VISION_FORWARD_DISTANCE 4070   /* 2.2 cm × 1850 counts/cm */
-#define VISION_BACK_DISTANCE    4995   /* 2.7 cm × 1850 counts/cm */
+#define VISION_BACK_DISTANCE    4995   /* legacy/shared path: 2.7 cm */
+#define TASK1_PLACE_BACK_DISTANCE 8695 /* 4.7 cm total Task1 clearance */
+#define TASK1_BLOCK_DROP_SETTLE_TICKS 40U  /* 400 ms at 100 Hz main loop */
+#define TASK1_BACK_CLEAR_DISTANCE     1850  /* first 1 cm after release */
+#define TASK1_BACK_CLEAR_SPEED         100
 
 /* 放置物块: 视觉对准+直进3cm后, 转盘解锁→旋转到目标槽位→释放→锁定→后退3cm */
 #define PLACE_DEFAULT_COLOR      21U   /* 默认放置颜色码, 后续按需修改 */

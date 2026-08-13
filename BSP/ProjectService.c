@@ -6,14 +6,14 @@
 #include "CompetitionQr.h"
 #include "Servo4.h"
 #include "Task1Mechanism.h"
+#include "TrophyMechanism.h"
 #include "VisionAlignment.h"
 #include "TurntableInventory.h"
 #include "MaxiCam.h"
-#include "TestMode.h"
+#include "Task1Color.h"
 #include <stdio.h>
 
 /* ---- 状态变量 ---- */
-static volatile uint8_t task1_route_test_done;
 static volatile uint8_t vision_skip;
 static volatile RouteState route_state = ROUTE_HOME_LAUNCH;
 static volatile RouteState pause_next_mode;
@@ -32,6 +32,8 @@ static uint8_t trophy_det_count;
 static uint32_t trophy_det_gap_until_ms;
 static VisionJob vision_job;
 static uint8_t place_step;
+static uint8_t task1_back_phase;
+static int32_t task1_back_total;
 static uint8_t final_left_stage;
 static uint8_t arm_to_task0_done;
 static uint8_t  final_left_heading_stable_ticks;
@@ -251,8 +253,9 @@ void ProjectService_Init(void)
     HWT101_getAngle_Reset();
     LineFollow_ResetLinePID();
     last_steer = 0;
-    task1_route_test_done = 0U;
     place_seq_index = 0;
+    task1_back_phase = 0U;
+    task1_back_total = 0;
     task2_collect_complete = 0U;
     task2_collect_done = 0U;
     task2_transition_step = 0U;
@@ -276,24 +279,7 @@ void ProjectService_Init(void)
         Servo4_ArmRampTo(tgt->big_arm_us, tgt->small_arm_us);
     }
     (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
-#if TASK2_ONLY_TEST_MODE
-    __disable_irq();
-    route_state = ROUTE_TASK2_PREPARE;
-    __enable_irq();
-    task2_prep_step = 0U;
-    task2_capture_index = 0U;
-    task2_place_index = 0U;
-    task2_collect_complete = 0U;
-    task2_collect_done = 0U;
-    trophy_det_count = 0U;
-    trophy_det_confirm = 0U;
-    trophy_det_last_seq = 0U;
-    trophy_det_gap_until_ms = 0U;
-    CompetitionQr_RequestStart(COMP_QR_TASK2);
-    ChassisPos_DrawStatus(1, "T2 Test Mode");
-#else
     ChassisPos_DrawStatus(1, "Home Launch");
-#endif
     HAL_TIM_Base_Start_IT(&htim7);
 }
 
@@ -641,114 +627,12 @@ void ProjectService_Run(void)
     ChassisPos_FlushDisplay();
     Task1Color_Process();
 
-#if LITTLE_GRIPPER_SEQ_TEST
-    {
-        static uint8_t  grip_test_state  = 0U;
-        static uint16_t grip_test_ticks  = 0U;
-        static uint8_t  grip_test_slot   = 0U;
-
-        switch (grip_test_state)
-        {
-        case 0U:
-            Servo4_LittleAllClose();
-            grip_test_ticks = 0U;
-            grip_test_state = 1U;
-            break;
-
-        case 1U:
-            if (++grip_test_ticks >= 50U)
-            {
-                grip_test_ticks = 0U;
-                grip_test_state = 2U;
-            }
-            break;
-
-        case 2U:
-            Servo4_LittleOpenSlot(grip_test_slot);
-            {
-                char _buf[16];
-                sprintf(_buf, "GRIP %d OPEN", (int)grip_test_slot);
-                ChassisPos_DrawStatus(1, _buf);
-            }
-            grip_test_ticks = 0U;
-            grip_test_state = 3U;
-            break;
-
-        case 3U:
-            if (++grip_test_ticks >= 200U)
-            {
-                grip_test_ticks = 0U;
-                grip_test_state = 4U;
-            }
-            break;
-
-        case 4U:
-            Servo4_LittleCloseSlot(grip_test_slot);
-            {
-                char _buf[16];
-                sprintf(_buf, "GRIP %d CLOSE", (int)grip_test_slot);
-                ChassisPos_DrawStatus(1, _buf);
-            }
-            grip_test_ticks = 0U;
-            grip_test_state = 5U;
-            break;
-
-        case 5U:
-            if (++grip_test_ticks >= 80U)
-            {
-                grip_test_ticks = 0U;
-                grip_test_slot++;
-                if (grip_test_slot >= 5U)
-                    grip_test_state = 6U;
-                else
-                    grip_test_state = 2U;
-            }
-            break;
-
-        case 6U:
-            Servo4_LittleAllClose();
-            ChassisPos_DrawStatus(1, "GRIP SEQ DONE");
-            grip_test_state = 7U;
-            break;
-
-        default:
-            break;
-        }
-        return;
-    }
-#endif
-
-#if HARDWARE_DEBUG_MODE
-    if (++lcd_div >= 20)
-    {
-        ChassisPos_DrawStatus(1, "HW DEBUG");
-        lcd_div = 0;
-    }
-    return;
-#endif
-
-#if !TASK2_ONLY_TEST_MODE
-    if (task1_route_test_done)
-    {
-        if (++lcd_div >= 5)
-        {
-            ChassisPos_DrawStatus(20, "T1 ROUTE DONE");
-            lcd_div = 0;
-        }
-        return;
-    }
-#endif
-
     if (route_state == ROUTE_MISSION_DONE)
     {
         LineFollow_Stop();
         if (++lcd_div >= 10)
         {
-#if TASK2_COLLECT_ONLY
-            ChassisPos_DrawStatus(1, "T2 COLL DONE");
-#else
             ChassisPos_DrawStatus(1, "MISSION DONE");
-#endif
             lcd_div = 0;
         }
         return;
@@ -1027,6 +911,14 @@ place_prep_done:
                     arm_to_task0_done = 0U;
                     place_step = 2U;
                 }
+                else if (vision_job == VISION_JOB_COLOR_PLACE)
+                {
+                    /* CH2 has released the block.  Freeze it at this slot and
+                     * give the block time to land before the chassis moves. */
+                    lcd_div = 0U;
+                    place_step = 4U;
+                    ChassisPos_DrawStatus(1, "Block Settle");
+                }
                 else
                 {
                     int32_t back_dist = -VISION_BACK_DISTANCE;
@@ -1052,21 +944,34 @@ place_prep_done:
             if (Servo4_ArmRampTick(t0->big_arm_us, t0->small_arm_us))
             {
                 arm_to_task0_done = 1U;
-                place_step = 3U;
+                lcd_div = 0U;
+                place_step = 4U;
             }
         }
-        else
+        else if (place_step == 4U)
         {
-            int32_t back_dist = -VISION_BACK_DISTANCE;
-            ChassisPos_ResetEncoder();
-            ChassisPos_ResetVelocityPid();
-            ChassisPos_Start(back_dist, back_dist, back_dist, back_dist);
-            __disable_irq();
-            route_state = ROUTE_VISION_BACK;
-            __enable_irq();
-            mode_entry_tick = 0;
-            lcd_div = 0;
-            ChassisPos_DrawStatus(1, "Back 2.7cm");
+            /* Do not rotate or lock CH2 while the block is settling. */
+            LineFollow_Stop();
+            if (++lcd_div >= TASK1_BLOCK_DROP_SETTLE_TICKS)
+            {
+                task1_back_total = (int32_t)TASK1_PLACE_BACK_DISTANCE;
+                if (vision_next_mode == ROUTE_FINAL_ROTATE_30)
+                    task1_back_total += 5550;
+
+                ChassisPos_ResetEncoder();
+                ChassisPos_ResetVelocityPid();
+                ChassisPos_Start(-(int32_t)TASK1_BACK_CLEAR_DISTANCE,
+                                 -(int32_t)TASK1_BACK_CLEAR_DISTANCE,
+                                 -(int32_t)TASK1_BACK_CLEAR_DISTANCE,
+                                 -(int32_t)TASK1_BACK_CLEAR_DISTANCE);
+                task1_back_phase = 1U;
+                __disable_irq();
+                route_state = ROUTE_VISION_BACK;
+                __enable_irq();
+                mode_entry_tick = 0;
+                lcd_div = 0;
+                ChassisPos_DrawStatus(1, "Back Clear 1cm");
+            }
         }
         return;
     }
@@ -1084,15 +989,37 @@ place_prep_done:
 
     if (route_state == ROUTE_VISION_BACK)
     {
-        if (ChassisPos_Update(VISION_FORWARD_SPEED, 0,
+        int back_speed = ((vision_job == VISION_JOB_COLOR_PLACE) &&
+                          (task1_back_phase == 1U))
+                       ? TASK1_BACK_CLEAR_SPEED : VISION_FORWARD_SPEED;
+
+        if (ChassisPos_Update(back_speed, 0,
               HeadingHold_GetFreshCorrection()))
         {
             ChassisPos_ResetEncoder();
             ChassisPos_ResetVelocityPid();
             LineFollow_Stop();
 
+            /* Task1 withdrawal is deliberately two-stage: creep through the
+             * first centimetre, then finish the remaining clearance normally.
+             * CH2 remains untouched throughout both stages. */
+            if ((vision_job == VISION_JOB_COLOR_PLACE) &&
+                (task1_back_phase == 1U) &&
+                (task1_back_total > TASK1_BACK_CLEAR_DISTANCE))
+            {
+                int32_t remaining = task1_back_total -
+                                    (int32_t)TASK1_BACK_CLEAR_DISTANCE;
+                ChassisPos_Start(-remaining, -remaining,
+                                 -remaining, -remaining);
+                task1_back_phase = 2U;
+                ChassisPos_DrawStatus(1, "Back Fast");
+                return;
+            }
+
             if (vision_job == VISION_JOB_COLOR_PLACE)
             {
+                task1_back_phase = 0U;
+                task1_back_total = 0;
                 TurntableInventory_MarkEmpty(place_slot_idx);
                 place_seq_index++;
                 Servo4_Task1RotationLockNow();
@@ -1105,7 +1032,6 @@ place_prep_done:
 
                 if (task2_place_index >= QR_TASK2_PLACE_COUNT)
                 {
-#if FULL_ROUTE_MODE
                     ChassisPos_ResetEncoder();
                     HeadingHold_Reset();
                     home_return_align_ticks = 0U;
@@ -1118,17 +1044,6 @@ place_prep_done:
                     mode_entry_tick = 0;
                     lcd_div = 0;
                     ChassisPos_DrawStatus(1, "Home Align");
-#else
-                    ChassisPos_ResetEncoder();
-                    HWT101_getAngle_Reset();
-                    HeadingHold_Reset();
-                    __disable_irq();
-                    route_state = ROUTE_FINAL_ROTATE_180;
-                    __enable_irq();
-                    mode_entry_tick = 0;
-                    lcd_div = 0;
-                    ChassisPos_DrawStatus(1, "Rotate 180 CW");
-#endif
                     return;
                 }
             }
@@ -1210,7 +1125,7 @@ place_prep_done:
         if (task2_prep_step == 0U)
         {
             LineFollow_Stop();
-            TurntableInventory_Reset();
+            TurntableInventory_Init(840U, 400U);
             Servo4_RotationHome();
             Servo4_TrophyLittleAllOpen();
             task2_capture_index = 0U;
@@ -1225,28 +1140,10 @@ place_prep_done:
             trophy_clear_frames = 0U;
             trophy_last_rank = 0U;
             trophy_last_slot = 0U;
-#if TASK2_ONLY_TEST_MODE
-            task2_prep_step = 1U;
-#else
             task2_prep_step = 2U;
-#endif
             lcd_div = 0;
             ChassisPos_DrawStatus(1, "T2 Prepare");
         }
-#if TASK2_ONLY_TEST_MODE
-        else if (task2_prep_step == 1U)
-        {
-            CompetitionQrStatus qr;
-
-            CompetitionQr_Process();
-            qr = CompetitionQr_GetStatus();
-            if ((qr == COMP_QR_READY) || (qr == COMP_QR_DEFAULTED))
-            {
-                task2_prep_step = 2U;
-                ChassisPos_DrawStatus(1, "T2 QR OK");
-            }
-        }
-#endif
         else
         {
             tgt = Task1Mechanism_GetWorkingPose();
@@ -1567,6 +1464,12 @@ place_prep_done:
             ChassisPos_DrawStatus(20, buf);
             sprintf(buf, "W:%3d V:%3d", wheel_target[1], velocity[1]);
             ChassisPos_DrawStatus(40, buf);
+            /* 摄像头收帧诊断: RX=总字节 P=完整帧 R=色块识别结果 */
+            sprintf(buf, "RX:%u P:%u R:%u",
+                    (unsigned)maxicam_diag_rx_bytes,
+                    (unsigned)maxicam_diag_packets,
+                    (unsigned)Task1Color_GetLastResult());
+            ChassisPos_DrawStatus(60, buf);
             lcd_div = 0;
         }
         return;
@@ -1583,13 +1486,6 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
 
     ChassisMotor_SampleEncoders();
     ChassisMotor_IntegrateEncoders();
-
-    if (task1_route_test_done)
-    {
-        LineFollow_Stop();
-        ChassisMotor_ControlTick(wheel_target);
-        return;
-    }
 
     if (route_state == ROUTE_HOME_LAUNCH)
     {
@@ -2143,7 +2039,6 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
         if (ChassisPos_Update(0, FINAL_LEFT_40_SPEED, 0))
         {
             LineFollow_Stop();
-#if FULL_ROUTE_MODE
             ChassisPos_ResetVelocityPid();
             Move_Control(0, 0, 0, 0);
             task2_transition_step = 0U;
@@ -2152,36 +2047,6 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
             lcd_div = 0;
             ChassisPos_DrawStatus(1, "T1->T2");
             return;
-#elif TASK1_ROUTE_TEST_MODE || ENCODER_ROUTE_TEST_MODE
-            ChassisPos_ResetVelocityPid();
-            Move_Control(0, 0, 0, 0);
-            task1_route_test_done = 1U;
-            ChassisPos_DrawStatus(1, "T1 ROUTE DONE");
-            return;
-#else
-            if (final_left_stage == 0)
-            {
-                final_left_stage = 1;
-                pause_next_mode = ROUTE_FINAL_LEFT_40;
-                CompetitionQr_RequestStart(COMP_QR_TASK2);
-            }
-            else
-            {
-                task2_transition_step = 0U;
-                route_state = ROUTE_TASK1_TO_TASK2;
-                mode_entry_tick = 0;
-                lcd_div = 0;
-                ChassisPos_DrawStatus(1, "T1->T2");
-                Move_Control(0, 0, 0, 0);
-                return;
-            }
-            route_state = ROUTE_PAUSE_GENERIC;
-            mode_entry_tick = 0;
-            lcd_div = 0;
-            ChassisPos_DrawStatus(1, "Pause");
-            Move_Control(0, 0, 0, 0);
-            return;
-#endif
         }
     }
 
@@ -2295,7 +2160,7 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
             break;
 
         case 2U:
-            TurntableInventory_Reset();
+            TurntableInventory_Init(840U, 400U);
             Servo4_RotationHome();
             Servo4_TrophyLittleAllOpen();
             task2_capture_index = 0U;
@@ -2530,7 +2395,6 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
             LineFollow_Stop();
             trophy_cam_mode_on = 0U;
             (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
-#if FULL_ROUTE_MODE
             home_return_align_ticks = 0U;
             home_return_stable_frames = 0U;
             home_return_last_frame = HWT101_GetUpdateCount();
@@ -2540,16 +2404,6 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
             mode_entry_tick = 0;
             lcd_div = 0;
             ChassisPos_DrawStatus(1, "Home Align");
-#else
-            ChassisPos_ResetEncoder();
-            HeadingHold_Reset();
-            __disable_irq();
-            route_state = ROUTE_MISSION_DONE;
-            __enable_irq();
-            mode_entry_tick = 0;
-            lcd_div = 0;
-            ChassisPos_DrawStatus(1, "T2 MISSION OK");
-#endif
         }
     }
 
@@ -2658,16 +2512,12 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                     task2_collect_done = 0U;
                     trophy_ticks = 0U;
                     Servo4_TrophyLittleAllClose();
-#if TASK2_COLLECT_ONLY
-                    LineFollow_Stop();
-#endif
                 }
 
                 marker_suppress_ticks = -(int)MARKER_SUPPRESS_TICKS;
             }
         }
 
-#if !TASK2_COLLECT_ONLY
         if (task2_collect_complete && !task2_collect_done)
         {
             if (++trophy_ticks >= TROPHY_GRIP_CLOSE_TICKS)
@@ -2679,7 +2529,6 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                 }
             }
         }
-#endif
 
         /* LCD 收集诊断 */
         if (++lcd_div >= 25)
@@ -2701,27 +2550,6 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
             lcd_div = 0;
         }
 
-#if TASK2_COLLECT_ONLY
-        if (task2_collect_complete && !task2_collect_done)
-        {
-            if (++trophy_ticks >= TROPHY_PLACE_SETTLE_TICKS)
-            {
-                Servo4_TrophyLittleAllClose();
-                Servo4_TrophyRotationLock();
-                task2_collect_done = 1U;
-                (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
-                __disable_irq();
-                route_state = ROUTE_MISSION_DONE;
-                __enable_irq();
-                mode_entry_tick = 0;
-                lcd_div = 0;
-                ChassisPos_DrawStatus(1, "T2 COLL DONE");
-                Move_Control(0, 0, 0, 0);
-                goto skip_track_return;
-            }
-            goto skip_track_return;
-        }
-#endif
 
         /* 前灰度右四路(5~8)全黑 → ROUTE_TROPHY */
         if (GS_state[5] && GS_state[6] && GS_state[7] && GS_state[8]
@@ -2892,11 +2720,5 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
         }
     }
 
-#if TASK2_ONLY_TEST_MODE && TASK2_MOTOR_DISABLE
-    wheel_target[1] = 0;
-    wheel_target[2] = 0;
-    wheel_target[3] = 0;
-    wheel_target[4] = 0;
-#endif
     ChassisMotor_ControlTick(wheel_target);
 }

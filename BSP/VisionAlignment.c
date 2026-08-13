@@ -2,9 +2,7 @@
 #include "MaxiCam.h"
 
 /* 共享常量 (两套配置不变) */
-#define ALIGN_TARGET_X       80
-#define ALIGN_TARGET_Y       60
-#define ALIGN_KP              5
+#define ALIGN_KP              2
 #define ALIGN_FRAME_MAX_AGE 800U
 
 /* =================================================================== *
@@ -13,9 +11,12 @@
 
 const VisionProfileCfg vision_cfg_task1 =
 {
-    .enter_band       = 7,
+    /* 76实测会进一步右偏，因此改到原中心反方向+4px。 */
+    .target_x         = 218,
+    .target_y         = 160,
+    .enter_band       = 18,
     .hysteresis       = 0,
-    .coarse_error     = 10,   /* Task1: 速度切换阈值, 非粗调 */
+    .coarse_error     = 26,   /* Task1: 速度切换阈值, 非粗调 */
     .min_speed        = 80,
     .max_speed        = 110,
     .fine_speed       = 100,
@@ -36,9 +37,11 @@ const VisionProfileCfg vision_cfg_task1 =
 
 const VisionProfileCfg vision_cfg_trophy =
 {
-    .enter_band       = 10,
-    .hysteresis       = 14,
-    .coarse_error     = 18,
+    .target_x         = 208,
+    .target_y         = 160,
+    .enter_band       = 26,
+    .hysteresis       = 36,
+    .coarse_error     = 47,
     .min_speed        = 80,
     .max_speed        = 90,
     .fine_speed       = 80,
@@ -52,7 +55,7 @@ const VisionProfileCfg vision_cfg_trophy =
     .use_hysteresis   = 1,
     .use_coarse       = 1,
     .use_kp_speed     = 0,
-    .coarse_px_to_counts = 70,
+    .coarse_px_to_counts = 27,
     .coarse_min       = 1110,
     .coarse_max       = 2775,
 };
@@ -70,8 +73,8 @@ static uint32_t align_next_command_ms;
 static uint32_t align_last_sequence;
 static uint8_t  align_filter_count;
 static uint8_t  align_filter_index;
-static uint8_t  align_x_history[3];
-static uint8_t  align_y_history[3];
+static uint16_t align_x_history[3];
+static uint16_t align_y_history[3];
 static uint32_t align_pulse_until_ms;
 static uint32_t align_settle_until_ms;
 static uint32_t align_finish_at_ms;
@@ -83,8 +86,8 @@ static int16_t  align_coarse_dist;
 
 volatile uint8_t  vision_diag_code;
 volatile uint8_t  vision_diag_mode;
-volatile uint8_t  vision_diag_x;
-volatile uint8_t  vision_diag_y;
+volatile uint16_t vision_diag_x;
+volatile uint16_t vision_diag_y;
 volatile uint32_t vision_diag_seq;
 volatile uint32_t vision_diag_age_ms;
 
@@ -92,13 +95,13 @@ volatile uint32_t vision_diag_age_ms;
  *  辅助
  * =================================================================== */
 
-static uint8_t VisionAlignment_Median3(const uint8_t value[3])
+static uint16_t VisionAlignment_Median3(const uint16_t value[3])
 {
-    uint8_t a = value[0];
-    uint8_t b = value[1];
-    uint8_t c = value[2];
-    if (a > b) { uint8_t t = a; a = b; b = t; }
-    if (b > c) { uint8_t t = b; b = c; c = t; }
+    uint16_t a = value[0];
+    uint16_t b = value[1];
+    uint16_t c = value[2];
+    if (a > b) { uint16_t t = a; a = b; b = t; }
+    if (b > c) { uint16_t t = b; b = c; c = t; }
     if (a > b) b = a;
     return b;
 }
@@ -217,6 +220,8 @@ void VisionAlignment_ResumeAfterCoarse(void)
 void VisionAlignment_Process(void)
 {
     MaxiCam_Frame frame;
+    uint16_t frame_x;
+    uint16_t frame_y;
     uint32_t now;
     const VisionProfileCfg *cfg = active_cfg;
 
@@ -272,14 +277,17 @@ void VisionAlignment_Process(void)
         return;
     }
 
+    frame_x = MaxiCam_FrameX(&frame);
+    frame_y = MaxiCam_FrameY(&frame);
     vision_diag_mode = frame.data[0];
-    vision_diag_x    = frame.data[2];
-    vision_diag_y    = frame.data[3];
+    vision_diag_x    = frame_x;
+    vision_diag_y    = frame_y;
     vision_diag_seq  = frame.sequence;
     vision_diag_age_ms = now - frame.received_at_ms;
 
     if ((frame.data[0] != 1U) ||
-        (frame.data[2] >= 160U) || (frame.data[3] >= 120U))
+        (frame_x == 0xFFFFU) || (frame_y == 0xFFFFU) ||
+        (frame_x >= 416U) || (frame_y >= 320U))
     {
         VisionAlignment_SetTarget(0, 0);
         vision_diag_code = (frame.data[0] != 1U) ? VISION_DIAG_BAD_MODE : VISION_DIAG_BAD_XY;
@@ -290,22 +298,22 @@ void VisionAlignment_Process(void)
     align_last_sequence = frame.sequence;
 
     {
-        uint8_t filtered_x;
-        uint8_t filtered_y;
+        uint16_t filtered_x;
+        uint16_t filtered_y;
         int error_x;
         int error_y;
         int abs_x;
         int abs_y;
 
-        align_x_history[align_filter_index] = frame.data[2];
-        align_y_history[align_filter_index] = frame.data[3];
+        align_x_history[align_filter_index] = frame_x;
+        align_y_history[align_filter_index] = frame_y;
         align_filter_index = (uint8_t)((align_filter_index + 1U) % 3U);
         if (align_filter_count < 3U) align_filter_count++;
 
         if (align_filter_count < 3U)
         {
-            filtered_x = frame.data[2];
-            filtered_y = frame.data[3];
+            filtered_x = frame_x;
+            filtered_y = frame_y;
         }
         else
         {
@@ -313,8 +321,8 @@ void VisionAlignment_Process(void)
             filtered_y = VisionAlignment_Median3(align_y_history);
         }
 
-        error_x = (int)filtered_x - ALIGN_TARGET_X;
-        error_y = (int)filtered_y - ALIGN_TARGET_Y;
+        error_x = (int)filtered_x - (int)cfg->target_x;
+        error_y = (int)filtered_y - (int)cfg->target_y;
         abs_x = (error_x >= 0) ? error_x : -error_x;
         abs_y = (error_y >= 0) ? error_y : -error_y;
 

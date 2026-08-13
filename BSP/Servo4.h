@@ -2,7 +2,6 @@
 #define __SERVO4_H__
 
 #include "main.h"
-#include "TrophyMechanism.h"
 
 /* ---- 通道定义 ----
  * CH0 / PC2: 大臂舵机 (Task1 平地 | Trophy 三组位姿)
@@ -38,8 +37,6 @@ void Servo4_TIM9_IRQHandler(void);
 /* ---- 高层舵机控制 ---- */
 
 /* 大臂+小臂：任务1 平地 / 任务2 奖杯台位姿 */
-void Servo4_UseTask1Parameters(void);
-void Servo4_UseTrophyPose(TrophyPoseType pose);
 void Servo4_ArmRampTo(uint16_t tgt0_us, uint16_t tgt1_us);
 uint8_t Servo4_ArmRampTick(uint16_t tgt0_us, uint16_t tgt1_us);
 uint8_t Servo4_ArmRampTickSlow(uint16_t tgt0_us, uint16_t tgt1_us);  /* 2us/step */
@@ -52,7 +49,6 @@ uint8_t Servo4_RotationRampTick(uint16_t target_us);
 
 /* 任务1 转盘锁死 (f75c177: PWM-200 物理锁死, 解锁恢复原值) */
 void Servo4_Task1RotationLockNow(void);
-void Servo4_Task1RotationUnlock(void);
 
 /* 任务2 转盘锁死 (07409af: 仅记录状态不改变PWM, 安全位独立标定) */
 void Servo4_TrophyRotationLock(void);
