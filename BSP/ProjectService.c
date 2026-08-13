@@ -265,9 +265,6 @@ void ProjectService_Init(void)
     home_return_stable_frames = 0U;
     home_return_last_frame = 0U;
     TurntableInventory_Init(840U, 400U);
-    /* Reassert the physical slot-0 position when the competition state
-     * machine starts.  Inventory slot 0 and the actual turntable must agree. */
-    Servo4_RotationHome();
     /* Keep CH3..CH7 open from power-up through Task1.  The Task2 transition
      * switches them to the trophy-specific open pulse; they close only after
      * all three trophies have actually been collected. */
@@ -1641,6 +1638,7 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
             TurntableInventory_Reset();
             Task1Color_Start();
             ChassisPos_DrawStatus(1, "Line Follow");
+            return; /* Do not execute ROUTE_TRACK_FIRST again in this ISR. */
         }
     }
 
@@ -2443,7 +2441,9 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                 ChassisPos_DrawStatus(1, "Rotate 90");
             }
         }
-        else if (GS_state[1] && GS_state[2] && GS_state[3] && GS_state[4])
+        else if ((Task1Color_GetCount() >= TURNTABLE_SLOT_COUNT) &&
+                 GS_state[1] && GS_state[2] &&
+                 GS_state[3] && GS_state[4])
         {
             LineFollow_Stop();
             ChassisPos_ResetVelocityPid();
