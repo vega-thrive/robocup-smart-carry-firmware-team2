@@ -94,6 +94,11 @@ int main(void)
 
     /* Init Servo (TIM9 software PWM) */
     Servo4_Init();
+    /* CH2 must hold the calibrated slot-0 position while waiting for START.
+     * Servo4_Init() leaves every channel at 0 (PWM disabled), so without this
+     * command the turntable has no holding torque and its initial slot is
+     * physically undefined. */
+    Servo4_RotationHome();
     /* CH3..CH7 must be open as soon as the controller powers up, including
      * while waiting for the start button.  Task2 changes to its calibrated
      * open value at entry and closes only after all trophies are collected. */

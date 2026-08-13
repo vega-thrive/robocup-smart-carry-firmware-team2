@@ -265,6 +265,9 @@ void ProjectService_Init(void)
     home_return_stable_frames = 0U;
     home_return_last_frame = 0U;
     TurntableInventory_Init(840U, 400U);
+    /* Reassert the physical slot-0 position when the competition state
+     * machine starts.  Inventory slot 0 and the actual turntable must agree. */
+    Servo4_RotationHome();
     /* Keep CH3..CH7 open from power-up through Task1.  The Task2 transition
      * switches them to the trophy-specific open pulse; they close only after
      * all three trophies have actually been collected. */
