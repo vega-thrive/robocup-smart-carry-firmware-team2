@@ -72,6 +72,7 @@ typedef enum {
 static uint8_t  place_slot_idx;
 static uint16_t place_pwm_us;
 static uint8_t  place_seq_index;
+static uint8_t  task1_circle_test_mode;
 static uint8_t  task2_capture_index;
 static uint8_t  task2_place_index;
 static uint8_t  task2_prep_step;
@@ -152,6 +153,23 @@ void ProjectService_SetRouteState(RouteState state)
 void ProjectService_SetVisionSkip(uint8_t on_off)
 {
     vision_skip = on_off;
+}
+
+void ProjectService_StartTask1CircleTest(void)
+{
+    LineFollow_Stop();
+    ChassisPos_ResetVelocityPid();
+    VisionAlignment_Cancel();
+    vision_job = VISION_JOB_COLOR_PLACE;
+    vision_skip = 0U;
+    vision_started = 0U;
+    task1_circle_test_mode = 1U;
+    mode_entry_tick = 0U;
+    lcd_div = 0U;
+    __disable_irq();
+    route_state = ROUTE_VISION_ALIGN;
+    __enable_irq();
+    ChassisPos_DrawStatus(1, "T1 Circle Align");
 }
 
 void ProjectService_SetInitialHeading(void)
@@ -254,6 +272,7 @@ void ProjectService_Init(void)
     LineFollow_ResetLinePID();
     last_steer = 0;
     place_seq_index = 0;
+    task1_circle_test_mode = 0U;
     task1_back_phase = 0U;
     task1_back_total = 0;
     task2_collect_complete = 0U;
@@ -806,12 +825,28 @@ place_prep_done:
                         (unsigned long)maxicam_diag_headers,
                         (unsigned long)maxicam_diag_packets);
                 LCD_DrawString_NoDMA(1, 140, buf, LCD_GREEN, LCD_BLACK);
+                sprintf(buf, "E:%d,%d C:%d,%d YS:%u",
+                        (int)vision_diag_err_x, (int)vision_diag_err_y,
+                        (int)vision_diag_cmd_x, (int)vision_diag_cmd_y,
+                        (unsigned)vision_diag_y_state);
+                LCD_DrawString_NoDMA(1, 160, buf, LCD_WHITE, LCD_BLACK);
             }
         }
 
         if (vision_status == VISION_ALIGN_TIMEOUT)
         {
             VisionAlignment_Cancel();
+            if (task1_circle_test_mode)
+            {
+                LineFollow_Stop();
+                Move_Control(0, 0, 0, 0);
+                vision_started = 0U;
+                __disable_irq();
+                route_state = ROUTE_MISSION_DONE;
+                __enable_irq();
+                ChassisPos_DrawStatus(1, "T1 Circle TIMEOUT");
+                return;
+            }
             if (vision_job == VISION_JOB_COLOR_PLACE)
             {
                 ChassisPos_ResetVelocityPid();
@@ -829,6 +864,18 @@ place_prep_done:
         }
         else if (vision_status == VISION_ALIGN_DONE)
         {
+            if (task1_circle_test_mode)
+            {
+                VisionAlignment_Cancel();
+                LineFollow_Stop();
+                Move_Control(0, 0, 0, 0);
+                vision_started = 0U;
+                __disable_irq();
+                route_state = ROUTE_MISSION_DONE;
+                __enable_irq();
+                ChassisPos_DrawStatus(1, "T1 Circle DONE");
+                return;
+            }
         }
         else
         {

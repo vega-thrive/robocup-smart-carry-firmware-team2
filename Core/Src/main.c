@@ -37,6 +37,10 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define TASK1_CIRCLE_TEST_MODE   1   /* 1=任务1同心圆对准专项测试 */
+#define SERVO_TEST_MODE          0   /* 1=CH2专项测试: 电机禁用, 仅CH2步进旋转; 0=正式比赛 */
+#define SERVO_TEST_CH2_INIT_US   500U  /* 测试初始值 */
+#define SERVO_TEST_CH2_STEP_US   500U  /* 每按一次 START_BTN 步进量 */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -102,6 +106,62 @@ int main(void)
     /* Init Motor & Encoder */
     ChassisMotor_Init(0.62f, 0.06f, 0.00f);
 
+#if TASK1_CIRCLE_TEST_MODE
+    /* 使用任务1正式的 VisionAlignment 配置和底盘控制。
+     * 上电自动开始一次；对准成功或超时后停车，按键可重新测试。 */
+    LCD_FillScreen(LCD_BLACK);
+    LCD_DrawString_NoDMA(1, 10, "TASK1 CIRCLE TEST", LCD_WHITE, LCD_BLACK);
+    LCD_DrawString_NoDMA(1, 220, "BTN: RESTART", LCD_GREEN, LCD_BLACK);
+    CompetitionTask_Init();
+    ProjectService_StartTask1CircleTest();
+    {
+        uint8_t last_pressed = 0U;
+        for (;;)
+        {
+            uint8_t pressed = (HAL_GPIO_ReadPin(START_BTN_GPIO_Port,
+                                                START_BTN_Pin) == GPIO_PIN_RESET);
+            if (pressed && !last_pressed)
+            {
+                HAL_Delay(50U);
+                ProjectService_StartTask1CircleTest();
+            }
+            last_pressed = pressed;
+            CompetitionTask_Process();
+            HAL_Delay(10U);
+        }
+    }
+#elif SERVO_TEST_MODE
+    /* ---- CH2 专项测试状态: 电机禁用, 仅 CH2 旋转 ----
+     * 上电 CH2=500; 每按 START_BTN +500, 2500 后回到 500 循环.
+     * 不启动 TIM7/ProjectService, 四轮保持 0 PWM 禁用. */
+    LCD_FillScreen(LCD_BLACK);
+    LCD_DrawString_NoDMA(1, 40, "SERVO CH2 TEST", LCD_WHITE, LCD_BLACK);
+    {
+        uint8_t step = 0U;
+        uint8_t last_pressed = 0U;
+        char buf[32];
+
+        Servo4_SetPulse(2U, SERVO_TEST_CH2_INIT_US);
+        for (;;)
+        {
+            uint8_t pressed = (HAL_GPIO_ReadPin(START_BTN_GPIO_Port,
+                                                START_BTN_Pin) == GPIO_PIN_RESET);
+
+            if (pressed && !last_pressed)
+            {
+                HAL_Delay(50);  /* debounce */
+                step = (step >= 4U) ? 0U : (uint8_t)(step + 1U);
+                Servo4_SetPulse(2U, (uint16_t)(SERVO_TEST_CH2_INIT_US
+                                + (uint16_t)SERVO_TEST_CH2_STEP_US * step));
+            }
+            last_pressed = pressed;
+
+            sprintf(buf, "STEP:%d PWM:%u   ", step, (unsigned)Servo4_GetPulse(2U));
+            LCD_DrawString_NoDMA(1, 80, buf, LCD_WHITE, LCD_BLACK);
+            HAL_Delay(10);
+        }
+    }
+#else
     /* Wait for START_BTN (PG10, active-low) press before running. */
     LCD_DrawString_NoDMA(1, 120, "Press BTN to Start", LCD_WHITE, LCD_BLACK);
     while (HAL_GPIO_ReadPin(START_BTN_GPIO_Port, START_BTN_Pin) != GPIO_PIN_RESET)
@@ -118,6 +178,7 @@ int main(void)
         CompetitionTask_Process();
         HAL_Delay(10);
     }
+#endif
 }
 
 /**

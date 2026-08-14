@@ -63,5 +63,7 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim);
 void ProjectService_SetRouteState(RouteState state);
 void ProjectService_SetVisionSkip(uint8_t on_off);
 void ProjectService_SetInitialHeading(void);
+/* 任务1同心圆专项测试：使用正式Task1视觉参数，对准完成/超时后停车。 */
+void ProjectService_StartTask1CircleTest(void);
 
 #endif

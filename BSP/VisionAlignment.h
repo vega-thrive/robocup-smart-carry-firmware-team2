@@ -64,6 +64,11 @@ extern volatile uint16_t vision_diag_x;
 extern volatile uint16_t vision_diag_y;
 extern volatile uint32_t vision_diag_seq;
 extern volatile uint32_t vision_diag_age_ms;
+extern volatile int16_t  vision_diag_err_x;
+extern volatile int16_t  vision_diag_err_y;
+extern volatile int16_t  vision_diag_cmd_x;
+extern volatile int16_t  vision_diag_cmd_y;
+extern volatile uint8_t  vision_diag_y_state;
 
 void VisionAlignment_Init(UART_HandleTypeDef *uart);
 void VisionAlignment_Start(VisionProfile profile);

@@ -2,8 +2,28 @@
 #include "MaxiCam.h"
 
 /* 共享常量 (两套配置不变) */
-#define ALIGN_KP              2
 #define ALIGN_FRAME_MAX_AGE 800U
+
+/* ---- Task1 视觉对准参数 (第一版: 纯P外环) ----
+ * MaixCAM 已做 3 帧滤波, F407 不再二次滤波.
+ * 帧差 D 项在 15FPS 下不稳定, 第一版禁用 (KD=0). */
+#define VISION_KP_X             1.0f
+#define VISION_KP_Y             0.65f
+#define VISION_KD_X             0.0f
+#define VISION_KD_Y             0.0f
+#define VISION_MAX_SPEED        70
+#define VISION_X_START_SPEED    60    /* 静止启动速度, 实车可调 65/70/80 */
+#define VISION_Y_START_SPEED    60
+#define VISION_X_HOLD_MIN_SPEED 38    /* 运动中的最低维持速度 */
+#define VISION_Y_HOLD_MIN_SPEED 38
+#define VISION_ACCEL_STEP       8     /* 仅同方向斜坡, 反向直接停车 */
+#define VISION_X_ENTER_BAND     8
+#define VISION_Y_ENTER_BAND     8
+#define VISION_Y_EXIT_BAND      12    /* 中心候选保持带, 超过才允许重启 */
+#define VISION_CENTER_FRAMES    4U
+#define VISION_AXIS_HYST        4     /* 轴选择滞环, 防止 X/Y 控制权抖动 */
+#define VISION_Y_SETTLE_MS      150U  /* 反向停车后的等待窗口 */
+#define VISION_FRAME_STOP_MS    250U  /* 无新序号超过此时长立即停车 (15FPS≈3~4帧, 容忍单帧漏检) */
 
 /* =================================================================== *
  *  配置实例: 任务1 (f75c177 基线) / 任务2 (07409af 基线)
@@ -11,18 +31,18 @@
 
 const VisionProfileCfg vision_cfg_task1 =
 {
-    /* 76实测会进一步右偏，因此改到原中心反方向+4px。 */
-    .target_x         = 218,
+    /* 与MaixCAM画面红色参考点/CAL_TARGET保持一致。机械末端固定偏移另行标定。 */
+    .target_x         = 208,
     .target_y         = 160,
     .enter_band       = 18,
     .hysteresis       = 0,
-    .coarse_error     = 26,   /* Task1: 速度切换阈值, 非粗调 */
+    .coarse_error     = 26,
     .min_speed        = 80,
-    .max_speed        = 110,
-    .fine_speed       = 100,
+    .max_speed        = 80,
+    .fine_speed       = 80,
     .x_move_sign      = -1,
     .y_move_sign      = -1,
-    .timeout_ms       = 12000U,
+    .timeout_ms       = 20000U,  /* 调试期 20s, 仅作安全停止 */
     .fine_pulse_ms    = 50U,
     .fine_settle_ms   = 120U,
     .finish_hold_ms   = 180U,
@@ -71,10 +91,6 @@ static volatile int align_target[4];
 static uint32_t align_started_ms;
 static uint32_t align_next_command_ms;
 static uint32_t align_last_sequence;
-static uint8_t  align_filter_count;
-static uint8_t  align_filter_index;
-static uint16_t align_x_history[3];
-static uint16_t align_y_history[3];
 static uint32_t align_pulse_until_ms;
 static uint32_t align_settle_until_ms;
 static uint32_t align_finish_at_ms;
@@ -84,36 +100,51 @@ static uint8_t  align_coarse_pending;
 static uint8_t  align_coarse_axis;
 static int16_t  align_coarse_dist;
 
+/* Task1 视觉对准状态 (每次 Start/Restart/Resume 全部清零) */
+typedef enum
+{
+    Y_STATE_IDLE = 0,
+    Y_STATE_MOVING,
+    Y_STATE_SETTLING
+} VisionYState;
+
+static float    vision_error_x_last;
+static float    vision_error_y_last;
+static int      vision_speed_x;
+static int      vision_speed_y;
+static uint8_t  vision_y_state;          /* VisionYState */
+static uint32_t vision_y_settle_until;
+static uint32_t vision_y_stop_sequence;
+static uint8_t  vision_center_count;
+static uint8_t  vision_center_candidate;
+static uint8_t  vision_active_axis;      /* 0=X 1=Y 2=未选择 */
+static uint32_t vision_last_new_frame_ms;  /* 最后一个新序号帧的时间戳 */
+
 volatile uint8_t  vision_diag_code;
 volatile uint8_t  vision_diag_mode;
 volatile uint16_t vision_diag_x;
 volatile uint16_t vision_diag_y;
 volatile uint32_t vision_diag_seq;
 volatile uint32_t vision_diag_age_ms;
+volatile int16_t  vision_diag_err_x;
+volatile int16_t  vision_diag_err_y;
+volatile int16_t  vision_diag_cmd_x;
+volatile int16_t  vision_diag_cmd_y;
+volatile uint8_t  vision_diag_y_state;
 
 /* =================================================================== *
  *  辅助
  * =================================================================== */
 
-static uint16_t VisionAlignment_Median3(const uint16_t value[3])
+/* 同方向目标轮速斜坡: 每帧最大变化 ±ACCEL_STEP.
+ * 静止启动和反向不走此函数. */
+static int VisionSlewLimit(int target, int previous)
 {
-    uint16_t a = value[0];
-    uint16_t b = value[1];
-    uint16_t c = value[2];
-    if (a > b) { uint16_t t = a; a = b; b = t; }
-    if (b > c) { uint16_t t = b; b = c; c = t; }
-    if (a > b) b = a;
-    return b;
-}
-
-/* Task1 KP比例速度 */
-static int VisionAlignment_Speed(int error, const VisionProfileCfg *cfg)
-{
-    int magnitude = (error >= 0) ? error : -error;
-    int speed = magnitude * ALIGN_KP;
-    if (speed < (int)cfg->min_speed) speed = (int)cfg->min_speed;
-    if (speed > (int)cfg->max_speed) speed = (int)cfg->max_speed;
-    return (error >= 0) ? speed : -speed;
+    if (target > previous + VISION_ACCEL_STEP)
+        return previous + VISION_ACCEL_STEP;
+    if (target < previous - VISION_ACCEL_STEP)
+        return previous - VISION_ACCEL_STEP;
+    return target;
 }
 
 static void VisionAlignment_SetTarget(int forward, int left)
@@ -141,14 +172,23 @@ void VisionAlignment_Init(UART_HandleTypeDef *uart)
     align_started_ms = 0U;
     align_next_command_ms = 0U;
     align_last_sequence = 0U;
-    align_filter_count = 0U;
-    align_filter_index = 0U;
     align_pulse_until_ms = 0U;
     align_settle_until_ms = 0U;
     align_finish_at_ms = 0U;
     align_pulse_count = 0U;
     align_in_band = 0U;
     align_coarse_pending = 0U;
+    vision_error_x_last = 0.0f;
+    vision_error_y_last = 0.0f;
+    vision_speed_x = 0;
+    vision_speed_y = 0;
+    vision_y_state = Y_STATE_IDLE;
+    vision_y_settle_until = 0U;
+    vision_y_stop_sequence = 0U;
+    vision_center_count = 0U;
+    vision_center_candidate = 0U;
+    vision_active_axis = 2U;
+    vision_last_new_frame_ms = 0U;
     (void)MaxiCam_StartReceiveIT();
 }
 
@@ -170,14 +210,23 @@ void VisionAlignment_Start(VisionProfile profile)
     align_started_ms = HAL_GetTick();
     align_next_command_ms = 0U;
     align_last_sequence = 0U;
-    align_filter_count = 0U;
-    align_filter_index = 0U;
     align_pulse_until_ms = 0U;
     align_settle_until_ms = 0U;
     align_finish_at_ms = 0U;
     align_pulse_count = 0U;
     align_in_band = 0U;
     align_coarse_pending = 0U;
+    vision_error_x_last = 0.0f;
+    vision_error_y_last = 0.0f;
+    vision_speed_x = 0;
+    vision_speed_y = 0;
+    vision_y_state = Y_STATE_IDLE;
+    vision_y_settle_until = 0U;
+    vision_y_stop_sequence = 0U;
+    vision_center_count = 0U;
+    vision_center_candidate = 0U;
+    vision_active_axis = 2U;
+    vision_last_new_frame_ms = 0U;
     (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
     (void)MaxiCam_SetMode(MAXICAM_MODE_CIRCLE);
 }
@@ -189,14 +238,23 @@ void VisionAlignment_Restart(void)
     align_started_ms = HAL_GetTick();
     align_next_command_ms = 0U;
     align_last_sequence = 0U;
-    align_filter_count = 0U;
-    align_filter_index = 0U;
     align_pulse_until_ms = 0U;
     align_settle_until_ms = 0U;
     align_finish_at_ms = 0U;
     align_pulse_count = 0U;
     align_in_band = 0U;
     align_coarse_pending = 0U;
+    vision_error_x_last = 0.0f;
+    vision_error_y_last = 0.0f;
+    vision_speed_x = 0;
+    vision_speed_y = 0;
+    vision_y_state = Y_STATE_IDLE;
+    vision_y_settle_until = 0U;
+    vision_y_stop_sequence = 0U;
+    vision_center_count = 0U;
+    vision_center_candidate = 0U;
+    vision_active_axis = 2U;
+    vision_last_new_frame_ms = 0U;
 }
 
 void VisionAlignment_ResumeAfterCoarse(void)
@@ -204,13 +262,22 @@ void VisionAlignment_ResumeAfterCoarse(void)
     VisionAlignment_SetTarget(0, 0);
     align_status = VISION_ALIGN_RUNNING;
     align_last_sequence = 0U;
-    align_filter_count = 0U;
-    align_filter_index = 0U;
     align_pulse_until_ms = 0U;
     align_settle_until_ms = 0U;
     align_finish_at_ms = 0U;
     align_in_band = 0U;
     align_coarse_pending = 0U;
+    vision_error_x_last = 0.0f;
+    vision_error_y_last = 0.0f;
+    vision_speed_x = 0;
+    vision_speed_y = 0;
+    vision_y_state = Y_STATE_IDLE;
+    vision_y_settle_until = 0U;
+    vision_y_stop_sequence = 0U;
+    vision_center_count = 0U;
+    vision_center_candidate = 0U;
+    vision_active_axis = 2U;
+    vision_last_new_frame_ms = 0U;
 }
 
 /* =================================================================== *
@@ -234,6 +301,12 @@ void VisionAlignment_Process(void)
     if ((now - align_started_ms) >= cfg->timeout_ms)
     {
         VisionAlignment_SetTarget(0, 0);
+        vision_speed_x = 0;
+        vision_speed_y = 0;
+        vision_y_state = Y_STATE_IDLE;
+        vision_y_settle_until = 0U;
+        vision_center_candidate = 0U;
+        vision_center_count = 0U;
         align_status = VISION_ALIGN_TIMEOUT;
         vision_diag_code = VISION_DIAG_TIMEOUT;
         return;
@@ -267,6 +340,9 @@ void VisionAlignment_Process(void)
     if (!MaxiCam_GetLatest(&frame, ALIGN_FRAME_MAX_AGE))
     {
         VisionAlignment_SetTarget(0, 0);
+        vision_speed_x = 0;  /* 丢帧直接停, 不经过斜坡 */
+        vision_speed_y = 0;
+        vision_center_count = 0U;
         vision_diag_code = VISION_DIAG_NO_FRAME;
         if ((int32_t)(now - align_next_command_ms) >= 0)
         {
@@ -290,63 +366,244 @@ void VisionAlignment_Process(void)
         (frame_x >= 416U) || (frame_y >= 320U))
     {
         VisionAlignment_SetTarget(0, 0);
+        vision_speed_x = 0;
+        vision_speed_y = 0;
+        vision_center_count = 0U;
         vision_diag_code = (frame.data[0] != 1U) ? VISION_DIAG_BAD_MODE : VISION_DIAG_BAD_XY;
         return;
     }
 
-    if (frame.sequence == align_last_sequence) return;
+    if (frame.sequence == align_last_sequence)
+    {
+        /* 相机跳变重确认期间会暂停发包: 旧序号不能维持旧轮速.
+         * 运动状态超过 FRAME_STOP_MS 没有新序号 -> 立即停车. */
+        if ((vision_speed_x != 0) || (vision_speed_y != 0))
+        {
+            if ((int32_t)(now - vision_last_new_frame_ms) >
+                (int32_t)VISION_FRAME_STOP_MS)
+            {
+                VisionAlignment_SetTarget(0, 0);
+                vision_speed_x = 0;
+                vision_speed_y = 0;
+                vision_y_state = Y_STATE_IDLE;
+                vision_diag_cmd_x = 0;
+                vision_diag_cmd_y = 0;
+            }
+        }
+        return;
+    }
     align_last_sequence = frame.sequence;
+    vision_last_new_frame_ms = now;
 
     {
-        uint16_t filtered_x;
-        uint16_t filtered_y;
         int error_x;
         int error_y;
         int abs_x;
         int abs_y;
 
-        align_x_history[align_filter_index] = frame_x;
-        align_y_history[align_filter_index] = frame_y;
-        align_filter_index = (uint8_t)((align_filter_index + 1U) % 3U);
-        if (align_filter_count < 3U) align_filter_count++;
-
-        if (align_filter_count < 3U)
-        {
-            filtered_x = frame_x;
-            filtered_y = frame_y;
-        }
-        else
-        {
-            filtered_x = VisionAlignment_Median3(align_x_history);
-            filtered_y = VisionAlignment_Median3(align_y_history);
-        }
-
-        error_x = (int)filtered_x - (int)cfg->target_x;
-        error_y = (int)filtered_y - (int)cfg->target_y;
+        error_x = (int)frame_x - (int)cfg->target_x;
+        error_y = (int)frame_y - (int)cfg->target_y;
         abs_x = (error_x >= 0) ? error_x : -error_x;
         abs_y = (error_y >= 0) ? error_y : -error_y;
 
-        /* ---- 对准判定: 进入允许范围 ---- */
-        if ((abs_x <= (int)cfg->enter_band) &&
-            (abs_y <= (int)cfg->enter_band))
+        if (cfg->use_kp_speed)
         {
-            if (cfg->use_hysteresis)
-                align_in_band = 1U;
-            VisionAlignment_SetTarget(0, 0);
-            vision_diag_code = VISION_DIAG_CENTERED;
-            align_pulse_until_ms = 0U;
-            align_settle_until_ms = 0U;
-            align_finish_at_ms = now + cfg->finish_hold_ms;
-            return;
-        }
+            /* ============================================================ *
+             *  Task1: 视觉位置纯P外环 (内环为 200Hz 速度 PID)
+             *  MaixCAM 已做 3 帧滤波, 此处直接用最新坐标, 不再二次滤波.
+             * ============================================================ */
 
-        /* ---- 滞环 (Task2 only) ---- */
-        if (cfg->use_hysteresis)
-        {
-            if (align_in_band &&
-                (abs_x <= (int)cfg->hysteresis) &&
-                (abs_y <= (int)cfg->hysteresis))
+            float ex_f = (float)error_x;
+            float ey_f = (float)error_y;
+
+            vision_diag_err_x = (int16_t)error_x;
+            vision_diag_err_y = (int16_t)error_y;
+            vision_diag_y_state = vision_y_state;
+
+            /* ---- 反向停车后的 SETTLING: 输出 0, 等 150ms + 新视觉帧 ---- */
+            if (vision_y_state == Y_STATE_SETTLING)
             {
+                VisionAlignment_SetTarget(0, 0);
+                vision_diag_cmd_x = 0;
+                vision_diag_cmd_y = 0;
+                vision_diag_code = VISION_DIAG_MOVING;
+                if ((int32_t)(now - vision_y_settle_until) < 0)
+                    return;
+                if ((int32_t)(frame.sequence - vision_y_stop_sequence) <= 0)
+                    return;   /* 丢弃停止前/停止期间的旧帧 */
+                vision_y_state = Y_STATE_IDLE;
+                /* 本帧是新帧, 继续用本帧重新计算, 不用旧误差反向启动 */
+            }
+
+            /* ---- 中心候选滞环: 进带停车, 4 帧确认; 超过退出带才重启 ---- */
+            if (!vision_center_candidate)
+            {
+                if ((abs_x <= VISION_X_ENTER_BAND) &&
+                    (abs_y <= VISION_Y_ENTER_BAND))
+                {
+                    VisionAlignment_SetTarget(0, 0);
+                    vision_speed_x = 0;
+                    vision_speed_y = 0;
+                    vision_y_state = Y_STATE_IDLE;
+                    vision_center_candidate = 1U;
+                    vision_center_count = 1U;
+                    vision_diag_cmd_x = 0;
+                    vision_diag_cmd_y = 0;
+                    vision_diag_code = VISION_DIAG_CENTERED;
+                    return;
+                }
+            }
+            else
+            {
+                if ((abs_x <= VISION_Y_EXIT_BAND) &&
+                    (abs_y <= VISION_Y_EXIT_BAND))
+                {
+                    VisionAlignment_SetTarget(0, 0);
+                    vision_speed_x = 0;
+                    vision_speed_y = 0;
+                    vision_diag_cmd_x = 0;
+                    vision_diag_cmd_y = 0;
+                    vision_diag_code = VISION_DIAG_CENTERED;
+                    if (++vision_center_count >= VISION_CENTER_FRAMES)
+                        align_finish_at_ms = now + cfg->finish_hold_ms;
+                    return;
+                }
+                vision_center_candidate = 0U;
+                vision_center_count = 0U;
+            }
+
+            vision_diag_code = VISION_DIAG_MOVING;
+            {
+                float dx = ex_f - vision_error_x_last;
+                float dy = ey_f - vision_error_y_last;
+                float left_cmd;
+                float forward_cmd;
+
+                vision_error_x_last = ex_f;
+                vision_error_y_last = ey_f;
+
+                /* 纯P: KD 暂为 0 (帧差 D 在 15FPS 下不稳定) */
+                left_cmd    = VISION_KP_X * ex_f + VISION_KD_X * dx;
+                forward_cmd = VISION_KP_Y * ey_f + VISION_KD_Y * dy;
+
+                left_cmd    *= (float)cfg->x_move_sign;
+                forward_cmd *= (float)cfg->y_move_sign;
+
+                /* ---- 单轴选择 + 滞环: 防止 X/Y 控制权频繁切换 ---- */
+                {
+                    uint8_t sel = (abs_y >= abs_x) ? 1U : 0U;
+                    if ((vision_active_axis == 0U) ||
+                        (vision_active_axis == 1U))
+                    {
+                        int cur_err   = (vision_active_axis == 1U) ? abs_y : abs_x;
+                        int other_err = (vision_active_axis == 1U) ? abs_x : abs_y;
+                        if ((other_err - cur_err) <= VISION_AXIS_HYST)
+                            sel = vision_active_axis;
+                    }
+                    vision_active_axis = sel;
+                }
+
+                if (vision_active_axis == 1U)
+                {
+                    /* ---- Y 轴 ---- */
+                    int raw = (int)forward_cmd;
+                    int speed;
+
+                    if (raw >  VISION_MAX_SPEED) raw =  VISION_MAX_SPEED;
+                    if (raw < -VISION_MAX_SPEED) raw = -VISION_MAX_SPEED;
+
+                    if (vision_speed_y != 0)
+                    {
+                        if ((raw >= 0) != (vision_speed_y > 0))
+                        {
+                            /* 方向反转: 立即停车进 SETTLING, 不做反向斜坡 */
+                            VisionAlignment_SetTarget(0, 0);
+                            vision_speed_x = 0;
+                            vision_speed_y = 0;
+                            vision_y_state = Y_STATE_SETTLING;
+                            vision_y_settle_until = now + VISION_Y_SETTLE_MS;
+                            vision_y_stop_sequence = frame.sequence;
+                            vision_diag_cmd_x = 0;
+                            vision_diag_cmd_y = 0;
+                            return;
+                        }
+                        speed = VisionSlewLimit(raw, vision_speed_y);
+                        if ((speed > 0) && (speed < VISION_Y_HOLD_MIN_SPEED))
+                            speed = VISION_Y_HOLD_MIN_SPEED;
+                        if ((speed < 0) && (speed > -VISION_Y_HOLD_MIN_SPEED))
+                            speed = -VISION_Y_HOLD_MIN_SPEED;
+                    }
+                    else
+                    {
+                        /* 静止启动: 直接给 START_SPEED, 不做低速爬升 */
+                        speed = (raw >= 0) ? VISION_Y_START_SPEED
+                                           : -VISION_Y_START_SPEED;
+                    }
+
+                    vision_speed_y = speed;
+                    vision_speed_x = 0;
+                    vision_y_state = Y_STATE_MOVING;
+                    VisionAlignment_SetTarget(speed, 0);
+                    vision_diag_cmd_x = 0;
+                    vision_diag_cmd_y = (int16_t)speed;
+                }
+                else
+                {
+                    /* ---- X 轴 ---- */
+                    int raw = (int)left_cmd;
+                    int speed;
+
+                    if (raw >  VISION_MAX_SPEED) raw =  VISION_MAX_SPEED;
+                    if (raw < -VISION_MAX_SPEED) raw = -VISION_MAX_SPEED;
+
+                    if (vision_speed_x != 0)
+                    {
+                        if ((raw >= 0) != (vision_speed_x > 0))
+                        {
+                            /* 方向反转: 同样停车进 SETTLING */
+                            VisionAlignment_SetTarget(0, 0);
+                            vision_speed_x = 0;
+                            vision_speed_y = 0;
+                            vision_y_state = Y_STATE_SETTLING;
+                            vision_y_settle_until = now + VISION_Y_SETTLE_MS;
+                            vision_y_stop_sequence = frame.sequence;
+                            vision_diag_cmd_x = 0;
+                            vision_diag_cmd_y = 0;
+                            return;
+                        }
+                        speed = VisionSlewLimit(raw, vision_speed_x);
+                        if ((speed > 0) && (speed < VISION_X_HOLD_MIN_SPEED))
+                            speed = VISION_X_HOLD_MIN_SPEED;
+                        if ((speed < 0) && (speed > -VISION_X_HOLD_MIN_SPEED))
+                            speed = -VISION_X_HOLD_MIN_SPEED;
+                    }
+                    else
+                    {
+                        speed = (raw >= 0) ? VISION_X_START_SPEED
+                                           : -VISION_X_START_SPEED;
+                    }
+
+                    vision_speed_x = speed;
+                    vision_speed_y = 0;
+                    vision_y_state = Y_STATE_MOVING;
+                    VisionAlignment_SetTarget(0, speed);
+                    vision_diag_cmd_x = (int16_t)speed;
+                    vision_diag_cmd_y = 0;
+                }
+            }
+        }
+        else
+        {
+            /* ============================================================ *
+             *  Task2: 原逻辑不变 (滞环+编码器粗调+脉冲精调)
+             * ============================================================ */
+
+            /* ---- 对准判定: 进入允许范围 ---- */
+            if ((abs_x <= (int)cfg->enter_band) &&
+                (abs_y <= (int)cfg->enter_band))
+            {
+                if (cfg->use_hysteresis)
+                    align_in_band = 1U;
                 VisionAlignment_SetTarget(0, 0);
                 vision_diag_code = VISION_DIAG_CENTERED;
                 align_pulse_until_ms = 0U;
@@ -354,48 +611,38 @@ void VisionAlignment_Process(void)
                 align_finish_at_ms = now + cfg->finish_hold_ms;
                 return;
             }
-            if ((abs_x > (int)cfg->hysteresis) ||
-                (abs_y > (int)cfg->hysteresis))
-                align_in_band = 0U;
-        }
 
-        vision_diag_code = VISION_DIAG_MOVING;
-
-        /* ================================================================ *
-         *  运动策略分叉
-         * ================================================================ */
-
-        if (abs_y > (int)cfg->enter_band)
-        {
-            int move_sign = (error_y >= 0) ? (int)cfg->y_move_sign
-                                           : -(int)cfg->y_move_sign;
-
-            if (cfg->use_coarse && abs_y > (int)cfg->coarse_error)
+            /* ---- 滞环 (Task2 only) ---- */
+            if (cfg->use_hysteresis)
             {
-                /* ---- Task2: 编码器粗调 (Y轴) ---- */
-                int32_t dist = (int32_t)abs_y * cfg->coarse_px_to_counts;
-                if (cfg->max_pulses && align_pulse_count >= cfg->max_pulses)
+                if (align_in_band &&
+                    (abs_x <= (int)cfg->hysteresis) &&
+                    (abs_y <= (int)cfg->hysteresis))
                 {
                     VisionAlignment_SetTarget(0, 0);
-                    align_status = VISION_ALIGN_TIMEOUT;
-                    vision_diag_code = VISION_DIAG_TIMEOUT;
+                    vision_diag_code = VISION_DIAG_CENTERED;
+                    align_pulse_until_ms = 0U;
+                    align_settle_until_ms = 0U;
+                    align_finish_at_ms = now + cfg->finish_hold_ms;
                     return;
                 }
-                if (dist < (int32_t)cfg->coarse_min) dist = (int32_t)cfg->coarse_min;
-                if (dist > (int32_t)cfg->coarse_max) dist = (int32_t)cfg->coarse_max;
-                align_pulse_count++;
-                align_coarse_dist  = (int16_t)(move_sign * (int)dist);
-                align_coarse_axis  = 0U;
-                align_coarse_pending = 1U;
-                VisionAlignment_SetTarget(0, 0);
+                if ((abs_x > (int)cfg->hysteresis) ||
+                    (abs_y > (int)cfg->hysteresis))
+                    align_in_band = 0U;
             }
-            else
+
+            vision_diag_code = VISION_DIAG_MOVING;
+
+            /* 每帧只调整误差更大的一轴, 避免 Y 轴始终抢占控制权. */
+            if ((abs_y > (int)cfg->enter_band) && (abs_y >= abs_x))
             {
-                /* ---- 精调 (Y轴) ---- */
-                if (cfg->use_kp_speed)
+                int move_sign = (error_y >= 0) ? (int)cfg->y_move_sign
+                                               : -(int)cfg->y_move_sign;
+
+                if (cfg->use_coarse && abs_y > (int)cfg->coarse_error)
                 {
-                    /* Task1: KP比例速度, 小误差切换固定速度 */
-                    int spd;
+                    /* ---- Task2: 编码器粗调 (Y轴) ---- */
+                    int32_t dist = (int32_t)abs_y * cfg->coarse_px_to_counts;
                     if (cfg->max_pulses && align_pulse_count >= cfg->max_pulses)
                     {
                         VisionAlignment_SetTarget(0, 0);
@@ -403,25 +650,17 @@ void VisionAlignment_Process(void)
                         vision_diag_code = VISION_DIAG_TIMEOUT;
                         return;
                     }
-                    if (abs_y <= (int)cfg->coarse_error)
-                    {
-                        spd = (error_y >= 0) ? (int)cfg->fine_speed
-                                             : -(int)cfg->fine_speed;
-                    }
-                    else
-                    {
-                        spd = VisionAlignment_Speed(error_y, cfg);
-                    }
-                    VisionAlignment_SetTarget(cfg->y_move_sign * spd, 0);
-                    if (abs_y <= (int)cfg->coarse_error)
-                    {
-                        if (cfg->max_pulses) align_pulse_count++;
-                        align_pulse_until_ms = now + cfg->fine_pulse_ms;
-                    }
+                    if (dist < (int32_t)cfg->coarse_min) dist = (int32_t)cfg->coarse_min;
+                    if (dist > (int32_t)cfg->coarse_max) dist = (int32_t)cfg->coarse_max;
+                    align_pulse_count++;
+                    align_coarse_dist  = (int16_t)(move_sign * (int)dist);
+                    align_coarse_axis  = 0U;
+                    align_coarse_pending = 1U;
+                    VisionAlignment_SetTarget(0, 0);
                 }
                 else
                 {
-                    /* Task2: 固定精调速度, 脉冲限制 */
+                    /* ---- Task2: 固定精调速度, 脉冲限制 ---- */
                     if (cfg->max_pulses && align_pulse_count >= cfg->max_pulses)
                     {
                         VisionAlignment_SetTarget(0, 0);
@@ -434,38 +673,15 @@ void VisionAlignment_Process(void)
                     align_pulse_until_ms = now + cfg->fine_pulse_ms;
                 }
             }
-        }
-        else if (abs_x > (int)cfg->enter_band)
-        {
-            int move_sign = (error_x >= 0) ? (int)cfg->x_move_sign
-                                           : -(int)cfg->x_move_sign;
+            else if (abs_x > (int)cfg->enter_band)
+            {
+                int move_sign = (error_x >= 0) ? (int)cfg->x_move_sign
+                                               : -(int)cfg->x_move_sign;
 
-            if (cfg->use_coarse && abs_x > (int)cfg->coarse_error)
-            {
-                /* ---- Task2: 编码器粗调 (X轴) ---- */
-                int32_t dist = (int32_t)abs_x * cfg->coarse_px_to_counts;
-                if (cfg->max_pulses && align_pulse_count >= cfg->max_pulses)
+                if (cfg->use_coarse && abs_x > (int)cfg->coarse_error)
                 {
-                    VisionAlignment_SetTarget(0, 0);
-                    align_status = VISION_ALIGN_TIMEOUT;
-                    vision_diag_code = VISION_DIAG_TIMEOUT;
-                    return;
-                }
-                if (dist < (int32_t)cfg->coarse_min) dist = (int32_t)cfg->coarse_min;
-                if (dist > (int32_t)cfg->coarse_max) dist = (int32_t)cfg->coarse_max;
-                align_pulse_count++;
-                align_coarse_dist  = (int16_t)(move_sign * (int)dist);
-                align_coarse_axis  = 1U;
-                align_coarse_pending = 1U;
-                VisionAlignment_SetTarget(0, 0);
-            }
-            else
-            {
-                /* ---- 精调 (X轴) ---- */
-                if (cfg->use_kp_speed)
-                {
-                    /* Task1: KP比例速度 */
-                    int spd;
+                    /* ---- Task2: 编码器粗调 (X轴) ---- */
+                    int32_t dist = (int32_t)abs_x * cfg->coarse_px_to_counts;
                     if (cfg->max_pulses && align_pulse_count >= cfg->max_pulses)
                     {
                         VisionAlignment_SetTarget(0, 0);
@@ -473,25 +689,17 @@ void VisionAlignment_Process(void)
                         vision_diag_code = VISION_DIAG_TIMEOUT;
                         return;
                     }
-                    if (abs_x <= (int)cfg->coarse_error)
-                    {
-                        spd = (error_x >= 0) ? (int)cfg->fine_speed
-                                             : -(int)cfg->fine_speed;
-                    }
-                    else
-                    {
-                        spd = VisionAlignment_Speed(error_x, cfg);
-                    }
-                    VisionAlignment_SetTarget(0, cfg->x_move_sign * spd);
-                    if (abs_x <= (int)cfg->coarse_error)
-                    {
-                        if (cfg->max_pulses) align_pulse_count++;
-                        align_pulse_until_ms = now + cfg->fine_pulse_ms;
-                    }
+                    if (dist < (int32_t)cfg->coarse_min) dist = (int32_t)cfg->coarse_min;
+                    if (dist > (int32_t)cfg->coarse_max) dist = (int32_t)cfg->coarse_max;
+                    align_pulse_count++;
+                    align_coarse_dist  = (int16_t)(move_sign * (int)dist);
+                    align_coarse_axis  = 1U;
+                    align_coarse_pending = 1U;
+                    VisionAlignment_SetTarget(0, 0);
                 }
                 else
                 {
-                    /* Task2: 固定精调速度 */
+                    /* ---- Task2: 固定精调速度 ---- */
                     if (cfg->max_pulses && align_pulse_count >= cfg->max_pulses)
                     {
                         VisionAlignment_SetTarget(0, 0);
@@ -511,6 +719,17 @@ void VisionAlignment_Process(void)
 void VisionAlignment_Cancel(void)
 {
     VisionAlignment_SetTarget(0, 0);
+    vision_error_x_last = 0.0f;
+    vision_error_y_last = 0.0f;
+    vision_speed_x = 0;
+    vision_speed_y = 0;
+    vision_y_state = Y_STATE_IDLE;
+    vision_y_settle_until = 0U;
+    vision_y_stop_sequence = 0U;
+    vision_center_count = 0U;
+    vision_center_candidate = 0U;
+    vision_active_axis = 2U;
+    vision_last_new_frame_ms = 0U;
     (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
     align_status = VISION_ALIGN_IDLE;
 }
@@ -518,6 +737,17 @@ void VisionAlignment_Cancel(void)
 void VisionAlignment_Finish(void)
 {
     VisionAlignment_SetTarget(0, 0);
+    vision_error_x_last = 0.0f;
+    vision_error_y_last = 0.0f;
+    vision_speed_x = 0;
+    vision_speed_y = 0;
+    vision_y_state = Y_STATE_IDLE;
+    vision_y_settle_until = 0U;
+    vision_y_stop_sequence = 0U;
+    vision_center_count = 0U;
+    vision_center_candidate = 0U;
+    vision_active_axis = 2U;
+    vision_last_new_frame_ms = 0U;
     align_status = VISION_ALIGN_IDLE;
 }
 
