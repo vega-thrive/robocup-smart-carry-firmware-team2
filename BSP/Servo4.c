@@ -9,10 +9,13 @@
 
 /* CH2 旋转舵机: 840us=零点, 每步 +400us (约 72°), 共 0~4 五个档位 */
 #define ROTATION_SERVO_CHANNEL       2U
-#define ROTATION_SERVO_HOME_US     840U
+#define ROTATION_SERVO_HOME_US     500U
 #define ROTATION_SERVO_STEP_US     400U
 #define ROTATION_SERVO_MAX_STEP      4U
-#define TROPHY_ROTATION_SAFE_US    840U  /* 杯间运输安全位置, 独立于 HOME 可标定 */
+#define TROPHY_ROTATION_HOME_US   1260U
+#define TROPHY_ROTATION_STEP_US    400U
+#define TROPHY_ROTATION_MAX_STEP     2U
+#define TROPHY_ROTATION_SAFE_US   1260U
 
 typedef struct
 {
@@ -315,6 +318,20 @@ void Servo4_Task1RotationLockNow(void)
  *  任务2 转盘锁死 (07409af 基线: 仅记录状态, 不改变 PWM)
  * =================================================================== */
 
+void Servo4_TrophyRotationHome(void)
+{
+    rotation_pre_lock_us = 0U;
+    Servo4_SetPulse(ROTATION_SERVO_CHANNEL, TROPHY_ROTATION_HOME_US);
+}
+
+void Servo4_TrophyRotationSetStep(uint8_t step)
+{
+    if (step > TROPHY_ROTATION_MAX_STEP) step = TROPHY_ROTATION_MAX_STEP;
+    Servo4_SetPulse(ROTATION_SERVO_CHANNEL,
+                    (uint16_t)(TROPHY_ROTATION_HOME_US
+                               + TROPHY_ROTATION_STEP_US * step));
+}
+
 void Servo4_TrophyRotationLock(void)
 {
     if (rotation_pre_lock_us != 0U) return;  /* 已锁死, 不重复 */
@@ -327,8 +344,18 @@ void Servo4_TrophyRotationSafe(void)
     Servo4_SetPulse(ROTATION_SERVO_CHANNEL, TROPHY_ROTATION_SAFE_US);
 }
 
-/* 小爪子通道: CH3~CH7 (PA5/PA6/PA7/PC4/PC5) */
-static const uint8_t little_channels[] = {3U, 4U, 5U, 6U, 7U};
+/* 扩展板通道从 CH1 编号，代码内部从 0 编号，因此板上编号=内部编号+1。
+ * 逻辑槽位按实车抓取顺序排列：
+ * slot0 -> 板上 CH8 (内部 7)，slot1 -> CH6 (内部 5)，
+ * slot2 -> CH4 (内部 3)。剩余 CH5/CH7 作为未使用槽位。 */
+static const uint8_t little_channels[] = {7U, 5U, 3U, 4U, 6U};
+
+/* 任务2各逻辑槽位的独立夹紧 PWM。slot0 是板上 CH8，
+ * 实车需要比其他通道多 50us 夹紧量。 */
+static const uint16_t little_close_us[5] =
+{
+    2200U, 2150U, 2150U, 2150U, 2150U
+};
 
 /* 每槽位脱钩 PWM, 独立标定.
  * CH3~CH7 虽同型号舵机, 但安装角度和连杆误差不同,
@@ -368,7 +395,7 @@ void Servo4_TrophyLittleAllClose(void)
 {
     uint8_t i;
     for (i = 0U; i < sizeof(little_channels); i++)
-        Servo4_SetPulse(little_channels[i], TROPHY_LITTLE_CLOSE_US);
+        Servo4_SetPulse(little_channels[i], little_close_us[i]);
 }
 
 void Servo4_TrophyLittleHalfOpenSlot(uint8_t slot_index)
@@ -392,7 +419,7 @@ void Servo4_TrophyLittleReleaseSlot(uint8_t slot_index)
 void Servo4_TrophyLittleCloseSlot(uint8_t slot_index)
 {
     if (slot_index >= sizeof(little_channels)) return;
-    Servo4_SetPulse(little_channels[slot_index], TROPHY_LITTLE_CLOSE_US);
+    Servo4_SetPulse(little_channels[slot_index], little_close_us[slot_index]);
 }
 
 /* 任务1 按槽位操作 (LITTLE_GRIPPER_SEQ_TEST 等调试用) */

@@ -2,6 +2,7 @@
 #include "usart.h"
 #include "GM65Scanner.h"
 #include "MaxiCam.h"
+#include "VofaTune.h"
 
 /* WIT serial frame: 0x55, type, 8 data bytes, checksum. */
 static uint8_t uart_rx_byte;
@@ -161,6 +162,12 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     {
         MaxiCam_OnRxComplete(huart);
     }
+#if VOFA_TUNE_ENABLE
+    else if (huart->Instance == USART2)
+    {
+        VofaTune_OnRxByte();
+    }
+#endif
 }
 
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
@@ -179,4 +186,10 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
     {
         MaxiCam_OnUartError();
     }
+#if VOFA_TUNE_ENABLE
+    else if (huart->Instance == USART2)
+    {
+        VofaTune_OnUartError();
+    }
+#endif
 }

@@ -45,8 +45,11 @@ void MaxiCam_Init(UART_HandleTypeDef *uart);
 /* 启动单字节串口中断接收；接收回调会自动续接下一字节。 */
 HAL_StatusTypeDef MaxiCam_StartReceiveIT(void);
 
-/* 发送一个字节的模式命令；当前实现为阻塞发送，最长等待20ms。 */
+/* 请求模式切换；STOP立即发送，紧随STOP的目标模式会延迟发送。 */
 HAL_StatusTypeDef MaxiCam_SetMode(MaxiCam_Mode mode);
+
+/* 在主循环中发送延迟的目标模式命令。 */
+void MaxiCam_Process(void);
 
 /* UART接收完成回调入口：解析本字节并重新挂起下一字节接收。 */
 void MaxiCam_OnRxComplete(UART_HandleTypeDef *uart);
@@ -64,5 +67,7 @@ uint8_t MaxiCam_GetLatest(MaxiCam_Frame *frame, uint32_t max_age_ms);
 extern volatile uint32_t maxicam_diag_rx_bytes;
 extern volatile uint32_t maxicam_diag_headers;
 extern volatile uint32_t maxicam_diag_packets;
+extern volatile uint32_t maxicam_diag_mode_tx;
+extern volatile uint32_t maxicam_diag_mode_tx_error;
 
 #endif

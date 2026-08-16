@@ -3,6 +3,7 @@
 
 volatile int velocity[5];
 volatile int encoder[5];
+volatile int motor_pwm[5];   /* Move_Control 最后一次输出的带符号 PWM (监控用) */
 
 extern TIM_HandleTypeDef htim2;
 extern TIM_HandleTypeDef htim3;
@@ -42,6 +43,7 @@ void Move_Control(int motoa, int motob, int motoc, int motod)
 					HAL_GPIO_WritePin(MOTOA1_GPIO_Port, MOTOA1_Pin, GPIO_PIN_RESET);
 					TIM8->CCR1 = -motoa;
 				}
+				motor_pwm[1] = motoa;
 				break;
 			case 1:
 				if (motob >= 900) motob = 900;
@@ -55,6 +57,7 @@ void Move_Control(int motoa, int motob, int motoc, int motod)
 					HAL_GPIO_WritePin(MOTOB1_GPIO_Port, MOTOB1_Pin, GPIO_PIN_SET);
 					TIM8->CCR2 = -motob;
 				}
+				motor_pwm[2] = motob;
 				break;
 			case 2:
 				if (motoc >= 900) motoc = 900;
@@ -68,6 +71,7 @@ void Move_Control(int motoa, int motob, int motoc, int motod)
 					HAL_GPIO_WritePin(MOTOC1_GPIO_Port, MOTOC1_Pin, GPIO_PIN_SET);
 					TIM8->CCR3 = -motoc;
 				}
+				motor_pwm[3] = motoc;
 				break;
 			case 3:
 				if (motod >= 900) motod = 900;
@@ -81,6 +85,7 @@ void Move_Control(int motoa, int motob, int motoc, int motod)
 					HAL_GPIO_WritePin(MOTOD1_GPIO_Port, MOTOD1_Pin, GPIO_PIN_RESET);
 					TIM8->CCR4 = -motod;
 				}
+				motor_pwm[4] = motod;
 				break;
 		}
 	}

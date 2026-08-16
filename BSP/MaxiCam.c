@@ -7,10 +7,22 @@ static uint8_t maxicam_index;                  /* 下一字节写入位置。 */
 static uint8_t maxicam_rx_byte;                /* HAL单字节中断接收缓存。 */
 static volatile MaxiCam_Frame maxicam_latest;  /* 最近一帧有效数据。 */
 
+/* 摄像头脚本需要先处理 STOP，才能可靠进入下一个识别循环。
+ * 旧代码在同一毫秒连续发送 STOP 和目标模式，目标字节可能被旧循环吞掉。 */
+#define MAXICAM_MODE_SWITCH_GUARD_MS 150U
+#define MAXICAM_MODE_RETRY_MS         20U
+static uint8_t maxicam_mode_pending;
+static uint8_t maxicam_pending_mode;
+static uint32_t maxicam_mode_send_at_ms;
+static uint32_t maxicam_last_stop_ms;
+static uint8_t maxicam_stop_guard_valid;
+
 /* 接收诊断：分别统计字节、帧头和完整有效帧。 */
 volatile uint32_t maxicam_diag_rx_bytes;
 volatile uint32_t maxicam_diag_headers;
 volatile uint32_t maxicam_diag_packets;
+volatile uint32_t maxicam_diag_mode_tx;
+volatile uint32_t maxicam_diag_mode_tx_error;
 
 static void MaxiCam_OnRxByte(uint8_t byte);
 
@@ -19,6 +31,11 @@ void MaxiCam_Init(UART_HandleTypeDef *uart)
 {
     maxicam_uart = uart;
     maxicam_index = 0U;
+    maxicam_mode_pending = 0U;
+    maxicam_pending_mode = 0U;
+    maxicam_mode_send_at_ms = 0U;
+    maxicam_last_stop_ms = 0U;
+    maxicam_stop_guard_valid = 0U;
     memset((void *)&maxicam_latest, 0, sizeof(maxicam_latest));
 }
 
@@ -29,12 +46,72 @@ HAL_StatusTypeDef MaxiCam_StartReceiveIT(void)
     return HAL_UART_Receive_IT(maxicam_uart, &maxicam_rx_byte, 1U);
 }
 
-/* 模式枚举值就是摄像头协议命令值，直接发送一个字节。 */
+static HAL_StatusTypeDef MaxiCam_TransmitModeByte(uint8_t command)
+{
+    HAL_StatusTypeDef status;
+
+    status = HAL_UART_Transmit(maxicam_uart, &command, 1U, 20U);
+    if (status == HAL_OK)
+        maxicam_diag_mode_tx++;
+    else
+        maxicam_diag_mode_tx_error++;
+    return status;
+}
+
+/* 模式枚举值就是协议命令值。STOP 立即发送；STOP 后的目标模式延迟
+ * 150ms 发送，避免两个命令在摄像头旧识别循环的一次 UART 读取中粘连。 */
 HAL_StatusTypeDef MaxiCam_SetMode(MaxiCam_Mode mode)
 {
     uint8_t command = (uint8_t)mode;
+    uint32_t now;
+
     if (maxicam_uart == NULL) return HAL_ERROR;
-    return HAL_UART_Transmit(maxicam_uart, &command, 1U, 20U);
+    now = HAL_GetTick();
+
+    /* 切换模式后旧模式的最近帧立即失效，只接受切换后新收到的数据。 */
+    maxicam_latest.received_at_ms = 0U;
+
+    if (mode == MAXICAM_MODE_STOP)
+    {
+        maxicam_mode_pending = 0U;
+        maxicam_last_stop_ms = now;
+        maxicam_stop_guard_valid = 1U;
+        return MaxiCam_TransmitModeByte(command);
+    }
+
+    maxicam_pending_mode = command;
+    maxicam_mode_pending = 1U;
+    maxicam_mode_send_at_ms = now;
+    if (maxicam_stop_guard_valid &&
+        ((now - maxicam_last_stop_ms) < MAXICAM_MODE_SWITCH_GUARD_MS))
+    {
+        maxicam_mode_send_at_ms = maxicam_last_stop_ms +
+                                  MAXICAM_MODE_SWITCH_GUARD_MS;
+        return HAL_OK;
+    }
+
+    if (MaxiCam_TransmitModeByte(maxicam_pending_mode) == HAL_OK)
+    {
+        maxicam_mode_pending = 0U;
+        return HAL_OK;
+    }
+    maxicam_mode_send_at_ms = now + MAXICAM_MODE_RETRY_MS;
+    return HAL_BUSY;
+}
+
+/* 主循环服务延迟的模式命令；发送忙时自动短延时重试。 */
+void MaxiCam_Process(void)
+{
+    uint32_t now;
+
+    if ((maxicam_uart == NULL) || !maxicam_mode_pending) return;
+    now = HAL_GetTick();
+    if ((int32_t)(now - maxicam_mode_send_at_ms) < 0) return;
+
+    if (MaxiCam_TransmitModeByte(maxicam_pending_mode) == HAL_OK)
+        maxicam_mode_pending = 0U;
+    else
+        maxicam_mode_send_at_ms = now + MAXICAM_MODE_RETRY_MS;
 }
 
 /* 摄像头固定发送10字节帧：

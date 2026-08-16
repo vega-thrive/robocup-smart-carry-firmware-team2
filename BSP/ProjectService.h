@@ -33,10 +33,12 @@ typedef enum
     ROUTE_FINAL_ROTATE_30,
     ROUTE_FINAL_FORWARD_2,
     ROUTE_FINAL_ROTATE_ALIGN,
+    ROUTE_FINAL_LEFT_OBSERVE_PAUSE,
     ROUTE_FINAL_LEFT_40,
     ROUTE_FINAL_ROTATE_180,
     ROUTE_PAUSE_GENERIC,
     ROUTE_VISION_ALIGN,
+    ROUTE_VISION_LEFT_OFFSET,
     ROUTE_VISION_FORWARD,
     ROUTE_VISION_BACK,
     ROUTE_PLACE,
@@ -52,6 +54,8 @@ typedef enum
     ROUTE_HOME_RIGHT_SHIFT,
     ROUTE_HOME_RETURN_ALIGN,
     ROUTE_HOME_RETURN_DRIVE,
+    ROUTE_HOME_FINAL_ALIGN,
+    ROUTE_HOME_ARM_RESET,
 
     ROUTE_MISSION_DONE
 } RouteState;
@@ -65,5 +69,13 @@ void ProjectService_SetVisionSkip(uint8_t on_off);
 void ProjectService_SetInitialHeading(void);
 /* 任务1同心圆专项测试：使用正式Task1视觉参数，对准完成/超时后停车。 */
 void ProjectService_StartTask1CircleTest(void);
+
+/* VOFA 监控 getter (只读, 不动状态机) */
+int      ProjectService_GetRouteState(void);
+void     ProjectService_TrackRouteStateTick(void);   /* 主循环每周期调用, 轻量 */
+uint32_t ProjectService_GetRouteStateEnterMs(void);
+uint16_t ProjectService_GetRouteSubStep(void);
+void     ProjectService_GetLineDebug(int *line_state, int *turn_target);
+void     ProjectService_GetHeadingDebug(float *angle, float *abs_yaw, int *correction);
 
 #endif

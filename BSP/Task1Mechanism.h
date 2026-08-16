@@ -20,6 +20,17 @@ static inline const Task1ArmPose *Task1Mechanism_GetTask0Pose(void)
     return &task0;
 }
 
+/* Final home posture only; Task0 remains unchanged. */
+static inline const Task1ArmPose *Task1Mechanism_GetHomePose(void)
+{
+    static const Task1ArmPose home_pose =
+    {
+         500U, /* big arm: CH0 / PC2 */
+        1200U  /* small arm: CH1 / PC3 */
+    };
+    return &home_pose;
+}
+
 /* FLAT 平地工作姿态 */
 static inline const Task1ArmPose *Task1Mechanism_GetWorkingPose(void)
 {

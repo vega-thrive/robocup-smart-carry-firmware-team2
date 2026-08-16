@@ -213,6 +213,12 @@ void USART1_IRQHandler(void)
   HAL_UART_IRQHandler(&huart1);
 }
 
+/* VOFA 调参串口 (VofaTune 模块所有); VOFA_TUNE_ENABLE=0 时 NVIC 不启用, 不会进入 */
+void USART2_IRQHandler(void)
+{
+  HAL_UART_IRQHandler(&huart2);
+}
+
 /******************************************************************************/
 /* STM32F4xx Peripheral Interrupt Handlers                                    */
 /* Add here the Interrupt Handlers for the used peripherals.                  */

@@ -37,10 +37,10 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define TASK1_CIRCLE_TEST_MODE   1   /* 1=任务1同心圆对准专项测试 */
+#define TASK1_CIRCLE_TEST_MODE   0   /* 1=任务1同心圆对准专项测试 */
 #define SERVO_TEST_MODE          0   /* 1=CH2专项测试: 电机禁用, 仅CH2步进旋转; 0=正式比赛 */
 #define SERVO_TEST_CH2_INIT_US   500U  /* 测试初始值 */
-#define SERVO_TEST_CH2_STEP_US   500U  /* 每按一次 START_BTN 步进量 */
+#define SERVO_TEST_CH2_STEP_US   400U  /* 每按一次 START_BTN 步进量 */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -72,6 +72,7 @@ void SystemClock_Config(void);
 #include "CompetitionTask.h"
 #include "ProjectService.h"
 #include "Servo4.h"
+#include "VofaTune.h"
 
 int main(void)
 {
@@ -114,6 +115,9 @@ int main(void)
     LCD_DrawString_NoDMA(1, 220, "BTN: RESTART", LCD_GREEN, LCD_BLACK);
     CompetitionTask_Init();
     ProjectService_StartTask1CircleTest();
+#if VOFA_TUNE_ENABLE
+    VofaTune_Init();
+#endif
     {
         uint8_t last_pressed = 0U;
         for (;;)
@@ -127,12 +131,15 @@ int main(void)
             }
             last_pressed = pressed;
             CompetitionTask_Process();
+#if VOFA_TUNE_ENABLE
+            VofaTune_Process();
+#endif
             HAL_Delay(10U);
         }
     }
 #elif SERVO_TEST_MODE
     /* ---- CH2 专项测试状态: 电机禁用, 仅 CH2 旋转 ----
-     * 上电 CH2=500; 每按 START_BTN +500, 2500 后回到 500 循环.
+     * 上电 CH2=500; 每按 START_BTN +400, 2100 后回到 500 循环.
      * 不启动 TIM7/ProjectService, 四轮保持 0 PWM 禁用. */
     LCD_FillScreen(LCD_BLACK);
     LCD_DrawString_NoDMA(1, 40, "SERVO CH2 TEST", LCD_WHITE, LCD_BLACK);
@@ -173,9 +180,16 @@ int main(void)
 
     CompetitionTask_Init();
 
+#if VOFA_TUNE_ENABLE
+    VofaTune_Init();
+#endif
+
     while (1)
     {
         CompetitionTask_Process();
+#if VOFA_TUNE_ENABLE
+        VofaTune_Process();
+#endif
         HAL_Delay(10);
     }
 #endif

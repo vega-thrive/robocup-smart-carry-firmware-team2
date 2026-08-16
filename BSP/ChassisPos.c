@@ -105,6 +105,14 @@ uint8_t ChassisPos_Update(int max_fwd, int max_left, int hc)
 
     speed_forward = TrapMove_Update(&trap_fwd, delta_forward, max_fwd);
     speed_left   = TrapMove_Update(&trap_left, delta_left, max_left);
+
+    /* A zero axis limit means that axis is intentionally disabled (for
+     * example, pure lateral movement).  TrapMove has a non-zero minimum
+     * speed, so explicitly suppress the disabled axis here; otherwise a
+     * small residual encoder error after rotation produces a visible
+     * forward/backward correction before the lateral move. */
+    if (max_fwd <= 0)  speed_forward = 0;
+    if (max_left <= 0) speed_left = 0;
     debug_trap_speed   = speed_forward;
     debug_trap_position = trap_fwd.position;
     debug_trap_error    = TrapMove_GetError(&trap_fwd);
@@ -136,10 +144,14 @@ uint8_t ChassisPos_Update(int max_fwd, int max_left, int hc)
     }
     LineFollow_SetWheelTargets(wheel[0], wheel[1], wheel[2], wheel[3]);
 
-    position_ok = (AbsInt(error_forward) <= POS_ERROR_THRESHOLD)
-               && (AbsInt(error_left) <= POS_ERROR_THRESHOLD);
-    velocity_ok = (AbsInt(delta_forward) <= POS_VEL_THRESHOLD)
-               && (AbsInt(delta_left) <= POS_VEL_THRESHOLD);
+    position_ok = ((max_fwd <= 0) ||
+                   (AbsInt(error_forward) <= POS_ERROR_THRESHOLD))
+               && ((max_left <= 0) ||
+                   (AbsInt(error_left) <= POS_ERROR_THRESHOLD));
+    velocity_ok = ((max_fwd <= 0) ||
+                   (AbsInt(delta_forward) <= POS_VEL_THRESHOLD))
+               && ((max_left <= 0) ||
+                   (AbsInt(delta_left) <= POS_VEL_THRESHOLD));
 
     if (position_ok && velocity_ok
         && (AbsInt(hc) <= POS_HEADING_DONE_LIMIT))
@@ -181,6 +193,11 @@ void ChassisPos_ResetEncoder(void)
 {
     ChassisMotor_ResetEncoders();
     pos_control_active = 0;
+}
+
+int ChassisPos_GetForwardPosition(void)
+{
+    return trap_fwd.position;
 }
 
 int ChassisPos_GetLeftPosition(void)

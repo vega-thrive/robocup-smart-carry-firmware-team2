@@ -7,11 +7,8 @@
  * CH0 / PC2: 大臂舵机 (Task1 平地 | Trophy 三组位姿)
  * CH1 / PC3: 小臂舵机 (同上)
  * CH2 / PA4: 旋转舵机 360° 位置舵机 (转盘, RotationHome/RotationSetStep)
- * CH3 / PA5: 小爪子 1 (LittleAllOpen/LittleAllClose 统控)
- * CH4 / PA6: 小爪子 2
- * CH5 / PA7: 小爪子 3
- * CH6 / PC4: 小爪子 4
- * CH7 / PC5: 小爪子 5
+ * 内部 CH3~CH7 对应扩展板 CH4~CH8（扩展板编号=内部编号+1）。
+ * 任务2实车抓取顺序：板上 CH8 -> CH6 -> CH4。
  */
 
 #define SERVO4_CHANNEL_COUNT 8U
@@ -23,7 +20,7 @@
 #define LITTLE_SERVO_CLOSE_US  2000U  /* 夹紧 */
 
 /* 任务2 奖杯专用开合角度 (07409af 基线) */
-#define TROPHY_LITTLE_CLOSE_US     2060U  /* 夹紧 */
+#define TROPHY_LITTLE_CLOSE_US     2150U  /* 夹紧 */
 #define TROPHY_LITTLE_HALF_OPEN_US 1750U  /* 半开: 解除夹紧力 */
 #define TROPHY_LITTLE_OPEN_US      1450U  /* 全开: 正常释放 */
 #define TROPHY_LITTLE_RELEASE_US   1350U  /* 脱钩: 爪尖完全离开奖杯 */
@@ -51,6 +48,8 @@ uint8_t Servo4_RotationRampTick(uint16_t target_us);
 void Servo4_Task1RotationLockNow(void);
 
 /* 任务2 转盘锁死 (07409af: 仅记录状态不改变PWM, 安全位独立标定) */
+void Servo4_TrophyRotationHome(void);
+void Servo4_TrophyRotationSetStep(uint8_t step);
 void Servo4_TrophyRotationLock(void);
 void Servo4_TrophyRotationSafe(void);
 

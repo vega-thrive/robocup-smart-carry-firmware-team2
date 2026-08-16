@@ -10,5 +10,6 @@ void Move_Encoder(void);
 
 extern volatile int velocity[5];
 extern volatile int encoder[5];
+extern volatile int motor_pwm[5];
 
 #endif

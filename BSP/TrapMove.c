@@ -49,8 +49,10 @@ int TrapMove_Update(TrapMove_Planner *tp, int32_t delta, int max_speed)
 
     /* v = sqrt(2 * decel * d)，整数运算，无浮点依赖 */
     desired = isqrt(2 * tp->decel * abs_err);
-    if (desired > max_speed) desired = max_speed;
     if (desired < tp->min_speed) desired = tp->min_speed;
+    /* The configured minimum must never override the caller's speed cap.
+     * This is important for a low-speed zero-position hold axis. */
+    if (desired > max_speed) desired = max_speed;
 
     if (abs_spd < desired) {
         abs_spd += tp->accel;

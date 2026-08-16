@@ -1477,6 +1477,16 @@
               <FileType>5</FileType>
               <FilePath>..\BSP\TurntableInventory.h</FilePath>
             </File>
+            <File>
+              <FileName>VofaTune.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\BSP\VofaTune.c</FilePath>
+            </File>
+            <File>
+              <FileName>VofaTune.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\BSP\VofaTune.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

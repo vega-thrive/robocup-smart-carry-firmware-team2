@@ -15,6 +15,8 @@ extern volatile int heading_correction;
 
 void HeadingHold_Init(void);
 void HeadingHold_Reset(void);
+void HeadingHold_SetGains(float kp, float ki, float kd, int limit);
+void HeadingHold_GetGains(float *kp, float *ki, float *kd, int *limit);
 int  HeadingHold_GetFreshCorrection(void);
 float HeadingHold_WrapAngle180(float angle);
 

@@ -26,6 +26,7 @@ extern volatile int debug_trap_left_error;
 void     ChassisPos_Init(void);
 void     ChassisPos_Start(int t1, int t2, int t3, int t4);
 uint8_t  ChassisPos_Update(int max_fwd, int max_left, int hc);
+int      ChassisPos_GetForwardPosition(void);
 int      ChassisPos_GetLeftPosition(void);
 void     ChassisPos_ResetEncoder(void);
 void     ChassisPos_ResetVelocityPid(void);

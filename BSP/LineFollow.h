@@ -45,9 +45,9 @@
 /* Fast return after Task2: align to the absolute heading saved in Home,
  * then drive straight by encoder with gyro heading hold. */
 #define HOME_RETURN_SPEED             400
-#define HOME_RETURN_DISTANCE       410700  /* reverse about 222 cm; tune here */
-#define HOME_RIGHT_SHIFT_DISTANCE   22200  /* 12 cm pure right move */
-#define HOME_RIGHT_SHIFT_SPEED        180  /* lateral speed for right shift */
+#define HOME_RETURN_DISTANCE       377400  /* reverse about 204 cm (202 + 2 cm) */
+#define HOME_RETURN_RIGHT_DISTANCE  64750  /* 35 cm right component (20 + 15 cm) */
+#define HOME_RETURN_RIGHT_SPEED       180  /* lateral component speed */
 #define HOME_RETURN_MARKER_ARM      37000  /* ignore podium line for first 20 cm */
 #define HOME_RETURN_ALIGN_TIMEOUT     400  /* 2 s at 200 Hz */
 #define HOME_RETURN_ALIGN_STABLE        3  /* fresh gyro frames within 2 deg */
@@ -62,16 +62,18 @@
 
 /* Trophy route: pause, rotate CW, reverse, then three stepped left moves. */
 #define TROPHY_PAUSE_TICKS          100  /* 0.5 s at 200 Hz */
+#define TROPHY_PRE_ROTATE_BACK_DISTANCE 3700 /* 2 cm x 1850 counts/cm */
+#define TROPHY_PRE_ROTATE_BACK_SPEED  180
 #define TROPHY_ROTATE_SPEED         372
 #define TROPHY_ROTATE_ANGLE        90.0f
 #define TROPHY_BACK_SPEED           300
 #define TROPHY_BACK_DISTANCE      62900  /* 34 cm x 1850 counts/cm */
 #define TROPHY_LEFT_SPEED           300
-#define TROPHY_LEFT1_DISTANCE     55500  /* calibrated 3.0 cm lateral travel */
+#define TROPHY_LEFT1_DISTANCE     55500  /* first left restored: previous value - 2 cm */
 #define TROPHY_LEFT2_DISTANCE     64750  /* calibrated 3.5 cm lateral travel */
 #define TROPHY_LEFT3_DISTANCE     64750  /* calibrated 3.5 cm lateral travel */
-#define TROPHY_GRAB_FAST_SPEED       230  /* 收集: 与第一次巡线同速 */
-#define TROPHY_GRAB_SLOW_SPEED       230  /* 收集: 与第一次巡线同速 */
+#define TROPHY_GRAB_FAST_SPEED       250  /* 收集巡线适度提速 */
+#define TROPHY_GRAB_SLOW_SPEED       250  /* 当前收集阶段保持统一速度 */
 #define TROPHY_PLACE_SETTLE_TICKS         80  /* 转盘旋转稳定等待 */
 #define TROPHY_ROTATE_SAFE_SETTLE_TICKS   80  /* 转盘回安全位稳定等待 */
 #define TROPHY_TARGET_POSE_SETTLE_TICKS   80  /* 目标姿态到位后稳定 800ms */
@@ -104,19 +106,22 @@
 
 /* 斜向前进: 前向与右移同时执行(真斜向), 右移 12cm = 22200 counts 硬编码.
  * 横向速度 150, 低于此值易打滑; 调距离改 ProjectService.c curve_right 常量. */
-#define CURVE_FORWARD_SPEED        180
+#define CURVE_FORWARD_SPEED        200
 #define CURVE_RIGHT_SPEED           47   /* 遗留: ChassisPos_SetCurveTarget 使用 */
-#define CURVE_RIGHT_MOVE_SPEED     130  /* 斜向前进横向速度 */
+#define CURVE_RIGHT_MOVE_SPEED     145  /* faster while preserving diagonal ratio */
 #define CURVE_ENCODER_COUNTS      77700  /* 前向 42 cm × 1850 */
 
-/* 视觉对准完成后: 固定航向直进 2.2cm, 再后退 2.7cm */
+/* 任务1视觉对准后：左移1.2cm，再固定航向直进1.4cm放置。 */
+#define TASK1_PLACE_LEFT_OFFSET_DISTANCE 2220 /* 1.2 cm x 1850 counts/cm */
+#define TASK1_PLACE_LEFT_OFFSET_SPEED    100
 #define VISION_FORWARD_SPEED     250
-#define VISION_FORWARD_DISTANCE 4070   /* 2.2 cm × 1850 counts/cm */
+#define VISION_FORWARD_DISTANCE 2590   /* 1.4 cm × 1850 counts/cm */
 #define VISION_BACK_DISTANCE    4995   /* legacy/shared path: 2.7 cm */
 #define TASK1_PLACE_BACK_DISTANCE 8695 /* 4.7 cm total Task1 clearance */
 #define TASK1_BLOCK_DROP_SETTLE_TICKS 40U  /* 400 ms at 100 Hz main loop */
 #define TASK1_BACK_CLEAR_DISTANCE     1850  /* first 1 cm after release */
 #define TASK1_BACK_CLEAR_SPEED         100
+#define TASK1_PLACE_BACK_FAST_SPEED    300  /* remaining withdrawal after first 1 cm */
 
 /* 放置物块: 视觉对准+直进3cm后, 转盘解锁→旋转到目标槽位→释放→锁定→后退3cm */
 #define PLACE_DEFAULT_COLOR      21U   /* 默认放置颜色码, 后续按需修改 */
@@ -135,49 +140,76 @@
  * 不同姿态下机构伸出水平长度不同, 亚军最低可能需更远. */
 #define TROPHY_BACK_RUNNER_COUNTS     11100  /* 亚军 6.0cm × 1850 */
 #define TROPHY_BACK_CHAMPION_COUNTS    9250  /* 冠军 5.0cm × 1850 */
-#define TROPHY_BACK_THIRD_COUNTS       9250  /* 季军 5.0cm × 1850 */
+#define TROPHY_BACK_THIRD_COUNTS      18500  /* 季军 10.0cm × 1850 */
 #define TROPHY_BACK_CLEAR_SPEED          80  /* 后退脱离速度 */
 #define TROPHY_BACK_SETTLE_TICKS         50  /* 后退到位后稳定 500ms */
 
 /* 后对准一: 视觉对准+直进3cm完成后左移2.5cm(46250 counts, 由直进完成分支预置),
  * 到位后前进40cm(74000 counts). 纯编码器定位, 不再用后八路灰度. */
-#define REAR_ALIGN_LEFT_SPEED   240
+#define REAR_ALIGN_LEFT_SPEED   270
 
 /* 后对准二: 视觉对准+直进3cm完成后后退30cm(54964 counts, 预置), 再左移8.5cm
  * (157250 counts); 左移期间前八路灰度检测到十字交叉线(GS3/GS4)可提前退出. */
-#define REAR_ALIGN_2_LEFT_SPEED  320
-#define REAR_ALIGN_2_BACK_SPEED  120
+#define REAR_ALIGN_2_LEFT_SPEED  360
+#define REAR_ALIGN_2_BACK_SPEED  160
 #define REAR_ALIGN_2_DISTANCE   157250  /* 8.5 cm lateral */
 
 /* Final forward: 80 cm with encoder + gyro heading hold. */
-#define FINAL_FORWARD_SPEED     380
+#define FINAL_FORWARD_SPEED     420
 #define PAUSE_TICKS              50    /* 250 ms pause */
 
 /* Final left-forward: 30 cm at ~62° after second pause. */
 #define PAUSE_2_TICKS           100    /* 0.5 s */
-#define FINAL_LF_FORWARD_SPEED  180
-#define FINAL_LF_LEFT_SPEED     340
+#define FINAL_LF_BACK_SPEED     230
+#define FINAL_LF_FORWARD_SPEED  200
+#define FINAL_LF_LEFT_SPEED     378
 #define FINAL_LF_DISTANCE     55500   /* 30 cm × 1850 */
 
 
 /* Final rotate 30° CW, then forward 30 cm. */
 #define FINAL_ROTATE_30_SPEED   280
 #define FINAL_ROTATE_30_ANGLE    35.0f
-#define FINAL_FORWARD_2_SPEED    320
+#define FINAL_FORWARD_2_SPEED    360
 
 /* Align to the saved left heading, move left 14.5 cm, then rotate 179° CW. */
 #define PAUSE_GENERIC_TICKS      100   /* 0.5 s */
 #define FINAL_ROTATE_ALIGN_SPEED 280
 #define FINAL_ROTATE_ALIGN_ANGLE  48.0f
 #define FINAL_LEFT_40_SPEED     320
+#define FINAL_LEFT_FWD_HOLD_SPEED 200 /* minimum effective speed for fore/aft drift correction */
+#define FINAL_LEFT_OBSERVE_PAUSE_TICKS 600U /* 3 s at 200 Hz */
+#define FINAL_PRE_LEFT_FORWARD_DISTANCE 9250 /* 5 cm x 1850 counts/cm */
+#define FINAL_PRE_LEFT_FORWARD_SPEED     220
 #define FINAL_ROTATE_180_SPEED  372
 #define FINAL_ROTATE_180_ANGLE  179.0f
 
 extern volatile int wheel_target[5];
 extern const int8_t line_weights[9];
 
+/* 运行时参数 (VofaTune 在线调, 初值=宏默认) */
+extern volatile float linefollow_kp;
+extern volatile float linefollow_ki;
+extern volatile float linefollow_kd;
+extern volatile int   linefollow_turn_limit;
+extern volatile int   linefollow_task1_speed;
+extern volatile int   linefollow_task2_speed;
+extern volatile int   linefollow_home_return_speed;
+/* 动作中实际使用的速度: 状态进入时由 LineFollow_LatchSpeeds 锁存 */
+extern volatile int linefollow_task1_speed_active;
+extern volatile int linefollow_task2_speed_active;
+extern volatile int linefollow_home_return_speed_active;
+void LineFollow_LatchSpeeds(void);
+
+/* 最近一次 PID 各项与转向输出 (监控用) */
+extern volatile float linefollow_debug_p;
+extern volatile float linefollow_debug_i;
+extern volatile float linefollow_debug_d;
+extern volatile int   linefollow_debug_steer;
+
 void LineFollow_Init(void);
 void LineFollow_ResetLinePID(void);
+void LineFollow_SetGains(float kp, float ki, float kd);
+void LineFollow_SetTurnLimit(int limit);
 int  LineFollow_ComputeLinePID(int error);
 void LineFollow_SetWheelTargets(int m1, int m2, int m3, int m4);
 void LineFollow_Stop(void);

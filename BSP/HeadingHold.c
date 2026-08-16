@@ -8,6 +8,31 @@ static float last_heading_error;
 static uint8_t heading_error_valid;
 static uint32_t last_heading_frame;
 
+/* 运行时增益 (初值=宏默认, VofaTune 在线可调) */
+static float heading_kp = HEADING_HOLD_KP;
+static float heading_ki = HEADING_HOLD_KI;
+static float heading_kd = HEADING_HOLD_KD;
+static int   heading_limit = HEADING_HOLD_LIMIT;
+
+void HeadingHold_SetGains(float kp, float ki, float kd, int limit)
+{
+    heading_kp = kp;
+    heading_ki = ki;
+    heading_kd = kd;
+    if (limit < 0) limit = 0;
+    if (limit > 400) limit = 400;
+    heading_limit = limit;
+    HeadingHold_Reset();   /* 清积分/历史误差, 防止输出突变 */
+}
+
+void HeadingHold_GetGains(float *kp, float *ki, float *kd, int *limit)
+{
+    if (kp != NULL)    *kp = heading_kp;
+    if (ki != NULL)    *ki = heading_ki;
+    if (kd != NULL)    *kd = heading_kd;
+    if (limit != NULL) *limit = heading_limit;
+}
+
 float HeadingHold_WrapAngle180(float angle)
 {
     while (angle > 180.0f)  angle -= 360.0f;
@@ -51,11 +76,11 @@ static int HeadingHold_GetCorrection(void)
     last_heading_error = error;
     heading_error_valid = 1;
 
-    correction = (int)(HEADING_HOLD_KP * error +
-                       HEADING_HOLD_KI * heading_integral +
-                       HEADING_HOLD_KD * derivative);
-    if (correction > HEADING_HOLD_LIMIT) correction = HEADING_HOLD_LIMIT;
-    if (correction < -HEADING_HOLD_LIMIT) correction = -HEADING_HOLD_LIMIT;
+    correction = (int)(heading_kp * error +
+                       heading_ki * heading_integral +
+                       heading_kd * derivative);
+    if (correction > heading_limit) correction = heading_limit;
+    if (correction < -heading_limit) correction = -heading_limit;
     return correction;
 }
 
