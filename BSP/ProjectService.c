@@ -2086,12 +2086,8 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
             {
                 ChassisPos_ResetVelocityPid();
                 mode_entry_tick = 1;
-                {
-                    int lat = (int)((long)FINAL_LF_DISTANCE
-                                  * FINAL_LF_LEFT_SPEED / FINAL_LF_FORWARD_SPEED);
-                    lat = lat * 2 - 74000;
-                    ChassisPos_Start(-lat, lat, -lat, lat);
-                }
+                /* 左移 7.3cm 固定标定值 (135790 counts), 不再由速度比派生 */
+                ChassisPos_Start(-135790, 135790, -135790, 135790);
                 ChassisPos_DrawStatus(1, "Left 7cm");
             }
         }

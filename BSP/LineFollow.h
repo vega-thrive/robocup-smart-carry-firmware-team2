@@ -106,9 +106,9 @@
 
 /* 斜向前进: 前向与右移同时执行(真斜向), 右移 12cm = 22200 counts 硬编码.
  * 横向速度 150, 低于此值易打滑; 调距离改 ProjectService.c curve_right 常量. */
-#define CURVE_FORWARD_SPEED        200
+#define CURVE_FORWARD_SPEED        445
 #define CURVE_RIGHT_SPEED           47   /* 遗留: ChassisPos_SetCurveTarget 使用 */
-#define CURVE_RIGHT_MOVE_SPEED     145  /* faster while preserving diagonal ratio */
+#define CURVE_RIGHT_MOVE_SPEED     200  /* faster while preserving diagonal ratio */
 #define CURVE_ENCODER_COUNTS      77700  /* 前向 42 cm × 1850 */
 
 /* 任务1视觉对准后：左移1.2cm，再固定航向直进2.5cm放置。 */
@@ -146,36 +146,36 @@
 
 /* 后对准一: 视觉对准+直进3cm完成后左移2.5cm(46250 counts, 由直进完成分支预置),
  * 到位后前进40cm(74000 counts). 纯编码器定位, 不再用后八路灰度. */
-#define REAR_ALIGN_LEFT_SPEED   270
+#define REAR_ALIGN_LEFT_SPEED   300
 
 /* 后对准二: 视觉对准+直进3cm完成后后退30cm(54964 counts, 预置), 再左移8.5cm
  * (157250 counts); 左移期间前八路灰度检测到十字交叉线(GS3/GS4)可提前退出. */
-#define REAR_ALIGN_2_LEFT_SPEED  360
-#define REAR_ALIGN_2_BACK_SPEED  160
+#define REAR_ALIGN_2_LEFT_SPEED  432
+#define REAR_ALIGN_2_BACK_SPEED  220
 #define REAR_ALIGN_2_DISTANCE   157250  /* 8.5 cm lateral */
 
 /* Final forward: 80 cm with encoder + gyro heading hold. */
-#define FINAL_FORWARD_SPEED     420
+#define FINAL_FORWARD_SPEED     504
 #define PAUSE_TICKS              50    /* 250 ms pause */
 
 /* Final left-forward: 30 cm at ~62° after second pause. */
 #define PAUSE_2_TICKS           100    /* 0.5 s */
-#define FINAL_LF_BACK_SPEED     230
-#define FINAL_LF_FORWARD_SPEED  200
-#define FINAL_LF_LEFT_SPEED     378
+#define FINAL_LF_BACK_SPEED     240
+#define FINAL_LF_FORWARD_SPEED  240
+#define FINAL_LF_LEFT_SPEED     451
 #define FINAL_LF_DISTANCE     55500   /* 30 cm × 1850 */
 
 
 /* Final rotate 30° CW, then forward 30 cm. */
 #define FINAL_ROTATE_30_SPEED   280
 #define FINAL_ROTATE_30_ANGLE    35.0f
-#define FINAL_FORWARD_2_SPEED    360
+#define FINAL_FORWARD_2_SPEED    420
 
 /* Align to the saved left heading, move left 14.5 cm, then rotate 179° CW. */
 #define PAUSE_GENERIC_TICKS      100   /* 0.5 s */
 #define FINAL_ROTATE_ALIGN_SPEED 280
 #define FINAL_ROTATE_ALIGN_ANGLE  48.0f
-#define FINAL_LEFT_40_SPEED     320
+#define FINAL_LEFT_40_SPEED     420
 #define FINAL_LEFT_FWD_HOLD_SPEED 200 /* minimum effective speed for fore/aft drift correction */
 #define FINAL_ROTATE_180_SPEED  372
 #define FINAL_ROTATE_180_ANGLE  179.0f

@@ -26,7 +26,7 @@
 #define VISION_Y_ENTER_BAND     8
 #define VISION_CENTER_FRAMES    4U
 #define TROPHY_CENTER_FRAMES    4U
-#define TASK1_SEARCH_DELAY_MS   2500U
+#define TASK1_SEARCH_DELAY_MS   1000U
 #define TASK1_SEARCH_MOVE_MS     600U
 #define TASK1_SEARCH_SETTLE_MS   200U
 #define TASK1_SEARCH_SPEED        60
@@ -131,6 +131,9 @@ static uint32_t vision_center_settle_until;
 static uint32_t vision_center_stop_sequence;
 static uint8_t  vision_active_axis;      /* 0=X 1=Y 2=未选择 */
 static uint32_t vision_last_new_frame_ms;  /* 最后一个新序号帧的时间戳 */
+/* 连续无有效圆帧的起始时刻, 0=当前有有效圆. 无效帧(丢帧/BAD_XY)不会刷新它,
+ * 保证 Task1 丢圆搜索的 2.5s 延迟不会被摄像头持续发送的无效帧无限重置. */
+static uint32_t vision_search_start_ms;
 
 volatile uint8_t  vision_diag_code;
 volatile uint8_t  vision_diag_mode;
@@ -192,8 +195,8 @@ static void VisionAlignment_Task1SearchY(uint32_t now)
     uint32_t cycle_ms;
     int forward;
 
-    base_ms = (vision_last_new_frame_ms != 0U) ?
-              vision_last_new_frame_ms : align_started_ms;
+    base_ms = (vision_search_start_ms != 0U) ?
+              vision_search_start_ms : align_started_ms;
     if ((now - base_ms) < TASK1_SEARCH_DELAY_MS)
     {
         VisionAlignment_SetTarget(0, 0);
@@ -256,6 +259,7 @@ void VisionAlignment_Init(UART_HandleTypeDef *uart)
     vision_center_candidate = 0U;
     vision_active_axis = 2U;
     vision_last_new_frame_ms = 0U;
+    vision_search_start_ms = 0U;
     vision_entry_settle_until = 0U;
     vision_entry_wait_frame = 0U;
     vision_center_settle_until = 0U;
@@ -297,6 +301,7 @@ void VisionAlignment_Start(VisionProfile profile)
     vision_center_candidate = 0U;
     vision_active_axis = 2U;
     vision_last_new_frame_ms = 0U;
+    vision_search_start_ms = 0U;
     vision_entry_settle_until = align_started_ms + VISION_ENTRY_SETTLE_MS;
     vision_entry_wait_frame = (active_profile_type == VISION_PROFILE_TASK1) ? 1U : 0U;
     vision_center_settle_until = 0U;
@@ -328,6 +333,7 @@ void VisionAlignment_Restart(void)
     vision_center_candidate = 0U;
     vision_active_axis = 2U;
     vision_last_new_frame_ms = 0U;
+    vision_search_start_ms = 0U;
     vision_entry_settle_until = align_started_ms + VISION_ENTRY_SETTLE_MS;
     vision_entry_wait_frame = (active_profile_type == VISION_PROFILE_TASK1) ? 1U : 0U;
     vision_center_settle_until = 0U;
@@ -355,6 +361,7 @@ void VisionAlignment_ResumeAfterCoarse(void)
     vision_center_candidate = 0U;
     vision_active_axis = 2U;
     vision_last_new_frame_ms = 0U;
+    vision_search_start_ms = 0U;
     vision_entry_settle_until = HAL_GetTick() + VISION_ENTRY_SETTLE_MS;
     vision_entry_wait_frame = (active_profile_type == VISION_PROFILE_TASK1) ? 1U : 0U;
     vision_center_settle_until = 0U;
@@ -450,6 +457,8 @@ void VisionAlignment_Process(void)
         vision_diag_code = VISION_DIAG_NO_FRAME;
         /* 模式已在Start时可靠切换。丢圆期间不能反复STOP+CIRCLE，
          * 否则摄像头识别循环会不断重启，屏幕已有圆也来不及上报。 */
+        if (vision_search_start_ms == 0U)
+            vision_search_start_ms = now;
         if (active_profile_type == VISION_PROFILE_TASK1)
             VisionAlignment_Task1SearchY(now);
         return;
@@ -472,6 +481,8 @@ void VisionAlignment_Process(void)
         vision_speed_y = 0;
         vision_center_count = 0U;
         vision_diag_code = (frame.data[0] != 1U) ? VISION_DIAG_BAD_MODE : VISION_DIAG_BAD_XY;
+        if (vision_search_start_ms == 0U)
+            vision_search_start_ms = now;
         if (active_profile_type == VISION_PROFILE_TASK1)
             VisionAlignment_Task1SearchY(now);
         return;
@@ -498,6 +509,8 @@ void VisionAlignment_Process(void)
     }
     align_last_sequence = frame.sequence;
     vision_last_new_frame_ms = now;
+    /* 已通过 BAD_XY 检查, 确认是新序号的圆帧: 清零丢圆计时 */
+    vision_search_start_ms = 0U;
 
     {
         int error_x;
@@ -864,6 +877,7 @@ void VisionAlignment_Cancel(void)
     vision_center_candidate = 0U;
     vision_active_axis = 2U;
     vision_last_new_frame_ms = 0U;
+    vision_search_start_ms = 0U;
     (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
     align_status = VISION_ALIGN_IDLE;
 }
@@ -882,6 +896,7 @@ void VisionAlignment_Finish(void)
     vision_center_candidate = 0U;
     vision_active_axis = 2U;
     vision_last_new_frame_ms = 0U;
+    vision_search_start_ms = 0U;
     align_status = VISION_ALIGN_IDLE;
 }
 
