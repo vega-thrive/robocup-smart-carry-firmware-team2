@@ -1,5 +1,10 @@
 #include "VisionAlignment.h"
 #include "MaxiCam.h"
+#include "Moto.h"
+
+#define VISION_ENTRY_SETTLE_MS  250U
+#define VISION_CENTER_SETTLE_MS 200U
+#define VISION_STOP_VEL_MAX      20
 
 /* 共享常量 (两套配置不变) */
 #define ALIGN_FRAME_MAX_AGE 800U
@@ -19,7 +24,6 @@
 #define VISION_ACCEL_STEP       8     /* 仅同方向斜坡, 反向直接停车 */
 #define VISION_X_ENTER_BAND     8
 #define VISION_Y_ENTER_BAND     8
-#define VISION_Y_EXIT_BAND      12    /* 中心候选保持带, 超过才允许重启 */
 #define VISION_CENTER_FRAMES    4U
 #define TROPHY_CENTER_FRAMES    4U
 #define TASK1_SEARCH_DELAY_MS   2500U
@@ -121,6 +125,10 @@ static uint32_t vision_y_settle_until;
 static uint32_t vision_y_stop_sequence;
 static uint8_t  vision_center_count;
 static uint8_t  vision_center_candidate;
+static uint32_t vision_entry_settle_until;
+static uint8_t  vision_entry_wait_frame;
+static uint32_t vision_center_settle_until;
+static uint32_t vision_center_stop_sequence;
 static uint8_t  vision_active_axis;      /* 0=X 1=Y 2=未选择 */
 static uint32_t vision_last_new_frame_ms;  /* 最后一个新序号帧的时间戳 */
 
@@ -149,6 +157,19 @@ static int VisionSlewLimit(int target, int previous)
     if (target < previous - VISION_ACCEL_STEP)
         return previous - VISION_ACCEL_STEP;
     return target;
+}
+
+static uint8_t VisionAlignment_WheelsStopped(void)
+{
+    uint8_t i;
+    for (i = 1U; i <= 4U; ++i)
+    {
+        int v = velocity[i];
+        if (v < 0) v = -v;
+        if (v > VISION_STOP_VEL_MAX)
+            return 0U;
+    }
+    return 1U;
 }
 
 static void VisionAlignment_SetTarget(int forward, int left)
@@ -235,6 +256,10 @@ void VisionAlignment_Init(UART_HandleTypeDef *uart)
     vision_center_candidate = 0U;
     vision_active_axis = 2U;
     vision_last_new_frame_ms = 0U;
+    vision_entry_settle_until = 0U;
+    vision_entry_wait_frame = 0U;
+    vision_center_settle_until = 0U;
+    vision_center_stop_sequence = 0U;
     (void)MaxiCam_StartReceiveIT();
 }
 
@@ -272,6 +297,10 @@ void VisionAlignment_Start(VisionProfile profile)
     vision_center_candidate = 0U;
     vision_active_axis = 2U;
     vision_last_new_frame_ms = 0U;
+    vision_entry_settle_until = align_started_ms + VISION_ENTRY_SETTLE_MS;
+    vision_entry_wait_frame = (active_profile_type == VISION_PROFILE_TASK1) ? 1U : 0U;
+    vision_center_settle_until = 0U;
+    vision_center_stop_sequence = 0U;
     (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
     (void)MaxiCam_SetMode(MAXICAM_MODE_CIRCLE);
 }
@@ -299,6 +328,10 @@ void VisionAlignment_Restart(void)
     vision_center_candidate = 0U;
     vision_active_axis = 2U;
     vision_last_new_frame_ms = 0U;
+    vision_entry_settle_until = align_started_ms + VISION_ENTRY_SETTLE_MS;
+    vision_entry_wait_frame = (active_profile_type == VISION_PROFILE_TASK1) ? 1U : 0U;
+    vision_center_settle_until = 0U;
+    vision_center_stop_sequence = 0U;
 }
 
 void VisionAlignment_ResumeAfterCoarse(void)
@@ -322,6 +355,10 @@ void VisionAlignment_ResumeAfterCoarse(void)
     vision_center_candidate = 0U;
     vision_active_axis = 2U;
     vision_last_new_frame_ms = 0U;
+    vision_entry_settle_until = HAL_GetTick() + VISION_ENTRY_SETTLE_MS;
+    vision_entry_wait_frame = (active_profile_type == VISION_PROFILE_TASK1) ? 1U : 0U;
+    vision_center_settle_until = 0U;
+    vision_center_stop_sequence = 0U;
 }
 
 /* =================================================================== *
@@ -379,6 +416,29 @@ void VisionAlignment_Process(void)
         vision_diag_code = VISION_DIAG_MOVING;
         if ((int32_t)(now - align_settle_until_ms) < 0) return;
         align_settle_until_ms = 0U;
+    }
+
+    /* Task1 entry: wait for chassis inertia to disappear, then discard the
+     * latest buffered frame. Only the following new sequence may drive. */
+    if ((active_profile_type == VISION_PROFILE_TASK1) &&
+        vision_entry_wait_frame)
+    {
+        VisionAlignment_SetTarget(0, 0);
+        vision_speed_x = 0;
+        vision_speed_y = 0;
+        vision_diag_cmd_x = 0;
+        vision_diag_cmd_y = 0;
+        vision_diag_code = VISION_DIAG_MOVING;
+        if ((int32_t)(now - vision_entry_settle_until) < 0)
+            return;
+        if (!VisionAlignment_WheelsStopped())
+            return;
+        if (!MaxiCam_GetLatest(&frame, ALIGN_FRAME_MAX_AGE))
+            return;
+        align_last_sequence = frame.sequence;
+        vision_last_new_frame_ms = now;
+        vision_entry_wait_frame = 0U;
+        return;
     }
 
     if (!MaxiCam_GetLatest(&frame, ALIGN_FRAME_MAX_AGE))
@@ -490,7 +550,9 @@ void VisionAlignment_Process(void)
                     vision_speed_y = 0;
                     vision_y_state = Y_STATE_IDLE;
                     vision_center_candidate = 1U;
-                    vision_center_count = 1U;
+                    vision_center_count = 0U;
+                    vision_center_settle_until = now + VISION_CENTER_SETTLE_MS;
+                    vision_center_stop_sequence = frame.sequence;
                     vision_diag_cmd_x = 0;
                     vision_diag_cmd_y = 0;
                     vision_diag_code = VISION_DIAG_CENTERED;
@@ -499,21 +561,44 @@ void VisionAlignment_Process(void)
             }
             else
             {
-                if ((abs_x <= VISION_Y_EXIT_BAND) &&
-                    (abs_y <= VISION_Y_EXIT_BAND))
+                VisionAlignment_SetTarget(0, 0);
+                vision_speed_x = 0;
+                vision_speed_y = 0;
+                vision_y_state = Y_STATE_IDLE;
+                vision_diag_cmd_x = 0;
+                vision_diag_cmd_y = 0;
+                vision_diag_code = VISION_DIAG_CENTERED;
+
+                /* Frames captured while the chassis is still coasting do not
+                 * count. Require both a settled chassis and a post-stop frame. */
+                if ((int32_t)(now - vision_center_settle_until) < 0)
+                    return;
+                if (!VisionAlignment_WheelsStopped())
                 {
-                    VisionAlignment_SetTarget(0, 0);
-                    vision_speed_x = 0;
-                    vision_speed_y = 0;
-                    vision_diag_cmd_x = 0;
-                    vision_diag_cmd_y = 0;
-                    vision_diag_code = VISION_DIAG_CENTERED;
-                    if (++vision_center_count >= VISION_CENTER_FRAMES)
-                        align_finish_at_ms = now + cfg->finish_hold_ms;
+                    vision_center_count = 0U;
                     return;
                 }
+                if ((int32_t)(frame.sequence - vision_center_stop_sequence) <= 0)
+                    return;
+
+                if ((abs_x <= VISION_X_ENTER_BAND) &&
+                    (abs_y <= VISION_Y_ENTER_BAND))
+                {
+                    if (++vision_center_count >= VISION_CENTER_FRAMES)
+                    {
+                        vision_center_count = 0U;
+                        align_status = VISION_ALIGN_DONE;
+                    }
+                    return;
+                }
+
+                /* A settled fresh frame outside the 8 px acceptance band must
+                 * resume correction. Do not park forever in the old 8..12 px
+                 * hysteresis zone. */
                 vision_center_candidate = 0U;
                 vision_center_count = 0U;
+                vision_center_settle_until = 0U;
+                vision_center_stop_sequence = 0U;
             }
 
             vision_diag_code = VISION_DIAG_MOVING;

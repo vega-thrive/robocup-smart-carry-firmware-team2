@@ -111,11 +111,11 @@
 #define CURVE_RIGHT_MOVE_SPEED     145  /* faster while preserving diagonal ratio */
 #define CURVE_ENCODER_COUNTS      77700  /* 前向 42 cm × 1850 */
 
-/* 任务1视觉对准后：左移1.2cm，再固定航向直进1.4cm放置。 */
+/* 任务1视觉对准后：左移1.2cm，再固定航向直进2.5cm放置。 */
 #define TASK1_PLACE_LEFT_OFFSET_DISTANCE 2220 /* 1.2 cm x 1850 counts/cm */
 #define TASK1_PLACE_LEFT_OFFSET_SPEED    100
 #define VISION_FORWARD_SPEED     250
-#define VISION_FORWARD_DISTANCE 2590   /* 1.4 cm × 1850 counts/cm */
+#define VISION_FORWARD_DISTANCE 4625   /* 2.5 cm × 1850 counts/cm (1.4cm+1.1cm) */
 #define VISION_BACK_DISTANCE    4995   /* legacy/shared path: 2.7 cm */
 #define TASK1_PLACE_BACK_DISTANCE 8695 /* 4.7 cm total Task1 clearance */
 #define TASK1_BLOCK_DROP_SETTLE_TICKS 40U  /* 400 ms at 100 Hz main loop */
@@ -177,9 +177,6 @@
 #define FINAL_ROTATE_ALIGN_ANGLE  48.0f
 #define FINAL_LEFT_40_SPEED     320
 #define FINAL_LEFT_FWD_HOLD_SPEED 200 /* minimum effective speed for fore/aft drift correction */
-#define FINAL_LEFT_OBSERVE_PAUSE_TICKS 600U /* 3 s at 200 Hz */
-#define FINAL_PRE_LEFT_FORWARD_DISTANCE 9250 /* 5 cm x 1850 counts/cm */
-#define FINAL_PRE_LEFT_FORWARD_SPEED     220
 #define FINAL_ROTATE_180_SPEED  372
 #define FINAL_ROTATE_180_ANGLE  179.0f
 

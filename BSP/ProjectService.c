@@ -35,11 +35,9 @@ static uint8_t place_step;
 static uint8_t task1_back_phase;
 static int32_t task1_back_total;
 static uint8_t final_left_stage;
-static uint16_t final_left_observe_ticks;
 static uint8_t arm_to_task0_done;
 static uint8_t  final_left_heading_stable_ticks;
 static uint32_t final_align_last_frame;
-static uint16_t final_align_tick;
 
 /* 放置流程状态机 */
 typedef enum {
@@ -1153,16 +1151,13 @@ place_prep_done:
             lcd_div++;
             if (lcd_div >= (unsigned)mode_entry_tick)
             {
-                if ((vision_job == VISION_JOB_COLOR_PLACE) &&
-                    (place_seq_index == 4U))
-                {
-                    arm_to_task0_done = 0U;
-                    place_step = 2U;
-                }
-                else if (vision_job == VISION_JOB_COLOR_PLACE)
+                if (vision_job == VISION_JOB_COLOR_PLACE)
                 {
                     /* CH2 has released the block.  Freeze it at this slot and
-                     * give the block time to land before the chassis moves. */
+                     * give the block time to land before the chassis moves.
+                     * 第5块不再提前收臂: 落稳后退完4.7cm,
+                     * 由 FINAL_ROTATE_ALIGN 停车后收臂到 Task0. */
+                    arm_to_task0_done = 0U;
                     lcd_div = 0U;
                     place_step = 4U;
                     ChassisPos_DrawStatus(1, "Block Settle");
@@ -1184,16 +1179,6 @@ place_prep_done:
                         (vision_next_mode == ROUTE_FINAL_ROTATE_30)
                             ? "Back 5.7cm" : "Back 2.7cm");
                 }
-            }
-        }
-        else if (place_step == 2U)
-        {
-            const Task1ArmPose *t0 = Task1Mechanism_GetTask0Pose();
-            if (Servo4_ArmRampTick(t0->big_arm_us, t0->small_arm_us))
-            {
-                arm_to_task0_done = 1U;
-                lcd_div = 0U;
-                place_step = 4U;
             }
         }
         else if (place_step == 4U)
@@ -1606,28 +1591,6 @@ place_prep_done:
             float e = HeadingHold_WrapAngle180(
                 left_heading_absolute - HWT101_GetAbsoluteYaw()) * yaw_ccw_sign;
             sprintf(buf, "Align E:%4.1f", (double)e);
-            ChassisPos_DrawStatus(20, buf);
-            lcd_div = 0;
-        }
-        return;
-    }
-
-    if (route_state == ROUTE_FINAL_LEFT_OBSERVE_PAUSE)
-    {
-        if (++lcd_div >= 5)
-        {
-            if (mode_entry_tick == 0)
-            {
-                uint16_t remain = (final_left_observe_ticks < FINAL_LEFT_OBSERVE_PAUSE_TICKS)
-                                ? (uint16_t)(FINAL_LEFT_OBSERVE_PAUSE_TICKS - final_left_observe_ticks)
-                                : 0U;
-                sprintf(buf, "Stop:%u.%us", (unsigned)(remain / 200U),
-                        (unsigned)((remain % 200U) / 20U));
-            }
-            else
-            {
-                sprintf(buf, "Fwd 5cm");
-            }
             ChassisPos_DrawStatus(20, buf);
             lcd_div = 0;
         }
@@ -2241,24 +2204,8 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                 return;
             }
 
-            final_align_tick++;
-
-            if (final_align_tick > 200)
-            {
-                LineFollow_Stop();
-                final_left_heading_stable_ticks = 0;
-                final_align_tick = 0;
-                final_left_stage = 0;
-                ChassisPos_ResetVelocityPid();
-                final_left_observe_ticks = 0U;
-                route_state = ROUTE_FINAL_LEFT_OBSERVE_PAUSE;
-                mode_entry_tick = 0;
-                lcd_div = 0;
-                ChassisPos_DrawStatus(1, "Observe Stop 3s");
-                Move_Control(0, 0, 0, 0);
-                return;
-            }
-
+            /* 航向未回正不放行: 已删除 200 ticks 超时兜底.
+             * 精对准必须稳定在 left_heading_absolute ±2° 连续3帧才继续. */
             uint32_t frame = HWT101_GetUpdateCount();
             if (frame == final_align_last_frame)
                 return;
@@ -2275,15 +2222,14 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                 {
                     LineFollow_Stop();
                     final_left_heading_stable_ticks = 0;
-                    final_align_tick = 0;
                     final_left_stage = 0;
                     ChassisPos_ResetVelocityPid();
-                    final_left_observe_ticks = 0U;
-                    route_state = ROUTE_FINAL_LEFT_OBSERVE_PAUSE;
+                    ChassisPos_ResetEncoder();
+                    ChassisPos_Start(-203500, 203500, -203500, 203500);
+                    route_state = ROUTE_FINAL_LEFT_40;
                     mode_entry_tick = 0;
                     lcd_div = 0;
-                    ChassisPos_DrawStatus(1, "Observe Stop 3s");
-                    Move_Control(0, 0, 0, 0);
+                    ChassisPos_DrawStatus(1, "Left 11 cm");
                     return;
                 }
             }
@@ -2310,41 +2256,6 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                 final_left_heading_stable_ticks = 0;
             }
         }
-    }
-
-    if (route_state == ROUTE_FINAL_LEFT_OBSERVE_PAUSE)
-    {
-        if (mode_entry_tick == 0)
-        {
-            LineFollow_Stop();
-            Move_Control(0, 0, 0, 0);
-            if (++final_left_observe_ticks >= FINAL_LEFT_OBSERVE_PAUSE_TICKS)
-            {
-                ChassisPos_ResetEncoder();
-                ChassisPos_ResetVelocityPid();
-                HWT101_getAngle_Reset();
-                HeadingHold_Reset();
-                ChassisPos_Start(FINAL_PRE_LEFT_FORWARD_DISTANCE,
-                                 FINAL_PRE_LEFT_FORWARD_DISTANCE,
-                                 FINAL_PRE_LEFT_FORWARD_DISTANCE,
-                                 FINAL_PRE_LEFT_FORWARD_DISTANCE);
-                final_left_observe_ticks = 0U;
-                mode_entry_tick = 1;
-                ChassisPos_DrawStatus(1, "Fwd 5 cm");
-            }
-        }
-        else if (ChassisPos_Update(FINAL_PRE_LEFT_FORWARD_SPEED, 0,
-                                   HeadingHold_GetFreshCorrection()))
-        {
-            ChassisPos_ResetEncoder();
-            ChassisPos_ResetVelocityPid();
-            ChassisPos_Start(-203500, 203500, -203500, 203500);
-            route_state = ROUTE_FINAL_LEFT_40;
-            mode_entry_tick = 0;
-            lcd_div = 0;
-            ChassisPos_DrawStatus(1, "Left 11 cm");
-        }
-        return;
     }
 
     if (route_state == ROUTE_FINAL_LEFT_40)
@@ -2394,7 +2305,6 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                 case ROUTE_FINAL_ROTATE_ALIGN:
                     ChassisPos_ResetEncoder();
                     final_align_last_frame = 0;
-                    final_align_tick = 0;
                     final_left_heading_stable_ticks = 0;
                     ChassisPos_DrawStatus(1, "Rotate 48 CW"); break;
                 case ROUTE_FINAL_LEFT_40:
