@@ -38,6 +38,24 @@ static uint8_t final_left_stage;
 static uint8_t arm_to_task0_done;
 static uint8_t  final_left_heading_stable_ticks;
 static uint32_t final_align_last_frame;
+static uint16_t final_align_tick;   /* 精对准超时兜底计数 (20 ticks = 100ms) */
+
+/* 5个放置点(A~E)的视觉对准后机械补偿: 左移 + 直进 (counts).
+ * 视觉把圆心对准后, 机械末端到落点仍有固定偏移, 各点独立标定. */
+typedef struct
+{
+    int16_t left_offset;
+    int16_t forward;
+} Task1PlaceComp;
+
+static const Task1PlaceComp task1_place_comp[5] =
+{
+    TASK1_PLACE_COMP_A,
+    TASK1_PLACE_COMP_B,
+    TASK1_PLACE_COMP_C,
+    TASK1_PLACE_COMP_D,
+    TASK1_PLACE_COMP_E,
+};
 
 /* 放置流程状态机 */
 typedef enum {
@@ -89,6 +107,7 @@ static uint8_t home_return_stable_frames;
 static uint32_t home_return_last_frame;
 static TrophyPlaceStep trophy_place_step;
 static uint8_t  trophy_place_settle_ticks;
+static uint8_t  trophy_align_started;   /* 0=PLACE_ALIGN 等待主循环启动视觉 */
 static uint8_t  trophy_place_back_active;
 static uint16_t trophy_heading_align_ticks;
 static uint8_t  trophy_heading_stable_frames;
@@ -499,17 +518,19 @@ static uint8_t TrophyPlace_Process(uint8_t place_index)
         LineFollow_Stop();
         if (++trophy_place_settle_ticks >= TROPHY_TARGET_POSE_SETTLE_TICKS)
         {
-            if (place_index == 0U)
-                VisionAlignment_Start(VISION_PROFILE_TROPHY);
-            else
-                VisionAlignment_Restart();
-
+            /* 视觉启动由主循环执行 (Start/Restart 内含阻塞 UART 模式切换,
+             * 不能在 TIM7 ISR 中发送, 否则模式命令可能发送失败导致摄像头
+             * 停留在无识别状态). 这里只置标志, PLACE_ALIGN 等待主循环启动. */
+            trophy_align_started = 0U;
             trophy_place_step = PLACE_ALIGN;
         }
         break;
 
     case PLACE_ALIGN: {
         VisionAlignment_Status vs;
+
+        if (!trophy_align_started)
+            break;   /* 等待主循环 VisionAlignment_Start/Restart */
 
         if (VisionAlignment_NeedCoarseMove())
         {
@@ -803,6 +824,22 @@ void ProjectService_Run(void)
     ChassisPos_FlushDisplay();
     Task1Color_Process();
 
+    /* 奖杯放置视觉启动: 在主循环执行, 避免在 TIM7 ISR 中阻塞发送 UART
+     * 模式切换命令 (ISR 中 HAL_UART_Transmit 可能失败, 摄像头停在无识别). */
+    if (route_state == ROUTE_TROPHY)
+    {
+        if ((trophy_phase >= 4U) && (trophy_phase <= 6U) &&
+            (trophy_place_step == PLACE_ALIGN) &&
+            (trophy_align_started == 0U))
+        {
+            if (task2_place_index == 0U)
+                VisionAlignment_Start(VISION_PROFILE_TROPHY);
+            else
+                VisionAlignment_Restart();
+            trophy_align_started = 1U;
+        }
+    }
+
     if (route_state == ROUTE_MISSION_DONE)
     {
         LineFollow_Stop();
@@ -1048,17 +1085,15 @@ place_prep_done:
 
         if (vision_job == VISION_JOB_COLOR_PLACE)
         {
-            ChassisPos_Start(-(int)TASK1_PLACE_LEFT_OFFSET_DISTANCE,
-                              (int)TASK1_PLACE_LEFT_OFFSET_DISTANCE,
-                             -(int)TASK1_PLACE_LEFT_OFFSET_DISTANCE,
-                              (int)TASK1_PLACE_LEFT_OFFSET_DISTANCE);
+            int left = task1_place_comp[place_seq_index].left_offset;
+            ChassisPos_Start(-left, left, -left, left);
             __disable_irq();
             route_state = ROUTE_VISION_LEFT_OFFSET;
             __enable_irq();
             mode_entry_tick = 0;
             lcd_div = 0;
             vision_started = 0U;
-            ChassisPos_DrawStatus(1, "Left 1.2cm");
+            ChassisPos_DrawStatus(1, "Left Offset");
             return;
         }
 
@@ -1084,14 +1119,16 @@ place_prep_done:
             ChassisPos_ResetEncoder();
             ChassisPos_ResetVelocityPid();
             LineFollow_Stop();
-            ChassisPos_Start(VISION_FORWARD_DISTANCE, VISION_FORWARD_DISTANCE,
-                             VISION_FORWARD_DISTANCE, VISION_FORWARD_DISTANCE);
+            {
+                int fwd = task1_place_comp[place_seq_index].forward;
+                ChassisPos_Start(fwd, fwd, fwd, fwd);
+            }
             __disable_irq();
             route_state = ROUTE_VISION_FORWARD;
             __enable_irq();
             mode_entry_tick = 0;
             lcd_div = 0;
-            ChassisPos_DrawStatus(1, "Fwd 1.4cm");
+            ChassisPos_DrawStatus(1, "Fwd Place");
         }
         return;
     }
@@ -1753,6 +1790,9 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
             }
         }
 
+        /* de1e7e7 全程跑通基线: 到角瞬间记录+重置后立即前进,
+         * 惯性过冲由旋转→前进的 PID 切换刹停 + HeadingHold 修正拉回.
+         * 不加停稳检查 (LineFollow_Stop 自由滑行反而过冲更多). */
         if (home_launch_tick >= 2)
         {
             float a;
@@ -2200,8 +2240,25 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                 return;
             }
 
-            /* 航向未回正不放行: 已删除 200 ticks 超时兜底.
-             * 精对准必须稳定在 left_heading_absolute ±2° 连续3帧才继续. */
+            /* 绝对航向精对准: 稳定在 left_heading_absolute ±2° 连续3帧.
+             * 超时兜底: 超过 20 ticks (100ms) 仍未对准则强制放行左移11cm,
+             * 防止陀螺仪噪声卡在 2° 边界时无限摇摆. */
+            final_align_tick++;
+            if (final_align_tick > 20)
+            {
+                LineFollow_Stop();
+                final_left_heading_stable_ticks = 0;
+                final_left_stage = 0;
+                ChassisPos_ResetVelocityPid();
+                ChassisPos_ResetEncoder();
+                ChassisPos_Start(-203500, 203500, -203500, 203500);
+                route_state = ROUTE_FINAL_LEFT_40;
+                mode_entry_tick = 0;
+                lcd_div = 0;
+                ChassisPos_DrawStatus(1, "Left 11 cm");
+                return;
+            }
+
             uint32_t frame = HWT101_GetUpdateCount();
             if (frame == final_align_last_frame)
                 return;
@@ -2301,6 +2358,7 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                 case ROUTE_FINAL_ROTATE_ALIGN:
                     ChassisPos_ResetEncoder();
                     final_align_last_frame = 0;
+                    final_align_tick = 0;
                     final_left_heading_stable_ticks = 0;
                     ChassisPos_DrawStatus(1, "Rotate 48 CW"); break;
                 case ROUTE_FINAL_LEFT_40:

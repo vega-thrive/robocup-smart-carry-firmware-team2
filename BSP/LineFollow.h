@@ -45,8 +45,8 @@
 /* Fast return after Task2: align to the absolute heading saved in Home,
  * then drive straight by encoder with gyro heading hold. */
 #define HOME_RETURN_SPEED             400
-#define HOME_RETURN_DISTANCE       377400  /* reverse about 204 cm (202 + 2 cm) */
-#define HOME_RETURN_RIGHT_DISTANCE  64750  /* 35 cm right component (20 + 15 cm) */
+#define HOME_RETURN_DISTANCE       370000  /* reverse 200 cm */
+#define HOME_RETURN_RIGHT_DISTANCE  74000  /* 40 cm right component (50 - 10 cm) */
 #define HOME_RETURN_RIGHT_SPEED       180  /* lateral component speed */
 #define HOME_RETURN_MARKER_ARM      37000  /* ignore podium line for first 20 cm */
 #define HOME_RETURN_ALIGN_TIMEOUT     400  /* 2 s at 200 Hz */
@@ -63,12 +63,12 @@
 /* Trophy route: pause, rotate CW, reverse, then three stepped left moves. */
 #define TROPHY_PAUSE_TICKS          100  /* 0.5 s at 200 Hz */
 #define TROPHY_PRE_ROTATE_BACK_DISTANCE 3700 /* 2 cm x 1850 counts/cm */
-#define TROPHY_PRE_ROTATE_BACK_SPEED  180
-#define TROPHY_ROTATE_SPEED         372
+#define TROPHY_PRE_ROTATE_BACK_SPEED  220
+#define TROPHY_ROTATE_SPEED         400
 #define TROPHY_ROTATE_ANGLE        90.0f
-#define TROPHY_BACK_SPEED           300
-#define TROPHY_BACK_DISTANCE      62900  /* 34 cm x 1850 counts/cm */
-#define TROPHY_LEFT_SPEED           300
+#define TROPHY_BACK_SPEED           380
+#define TROPHY_BACK_DISTANCE      70300  /* 38 cm x 1850 counts/cm (34+4) */
+#define TROPHY_LEFT_SPEED           360
 #define TROPHY_LEFT1_DISTANCE     55500  /* first left restored: previous value - 2 cm */
 #define TROPHY_LEFT2_DISTANCE     64750  /* calibrated 3.5 cm lateral travel */
 #define TROPHY_LEFT3_DISTANCE     64750  /* calibrated 3.5 cm lateral travel */
@@ -106,14 +106,21 @@
 
 /* 斜向前进: 前向与右移同时执行(真斜向), 右移 12cm = 22200 counts 硬编码.
  * 横向速度 150, 低于此值易打滑; 调距离改 ProjectService.c curve_right 常量. */
-#define CURVE_FORWARD_SPEED        445
+#define CURVE_FORWARD_SPEED        500
 #define CURVE_RIGHT_SPEED           47   /* 遗留: ChassisPos_SetCurveTarget 使用 */
-#define CURVE_RIGHT_MOVE_SPEED     200  /* faster while preserving diagonal ratio */
+#define CURVE_RIGHT_MOVE_SPEED     230  /* faster while preserving diagonal ratio */
 #define CURVE_ENCODER_COUNTS      77700  /* 前向 42 cm × 1850 */
 
-/* 任务1视觉对准后：左移1.2cm，再固定航向直进2.5cm放置。 */
-#define TASK1_PLACE_LEFT_OFFSET_DISTANCE 2220 /* 1.2 cm x 1850 counts/cm */
+/* 任务1视觉对准后：左移1.2cm，再固定航向直进2.5cm放置。
+ * 5个放置点(A~E)机械补偿独立标定: {左移counts, 直进counts},
+ * 视觉把圆心对准后机械末端到落点的固定偏移各点不同. */
 #define TASK1_PLACE_LEFT_OFFSET_SPEED    100
+/* 实测(8.18): A/C/D/E 偏右0.4cm→3330; B 偏左1.1cm→-185; 复测 A/D 仍偏右0.5cm→4255 */
+#define TASK1_PLACE_COMP_A  { 4255, 4625 }
+#define TASK1_PLACE_COMP_B  { -185, 4625 }
+#define TASK1_PLACE_COMP_C  { 3330, 4625 }
+#define TASK1_PLACE_COMP_D  { 4255, 4625 }
+#define TASK1_PLACE_COMP_E  { 3330, 4625 }
 #define VISION_FORWARD_SPEED     250
 #define VISION_FORWARD_DISTANCE 4625   /* 2.5 cm × 1850 counts/cm (1.4cm+1.1cm) */
 #define VISION_BACK_DISTANCE    4995   /* legacy/shared path: 2.7 cm */
@@ -133,7 +140,7 @@
 #define TROPHY_INSERT_RUNNER_COUNTS    7400  /* 亚军 4.0cm × 1850 */
 #define TROPHY_INSERT_CHAMPION_COUNTS  7400  /* 冠军 4.0cm × 1850 */
 #define TROPHY_INSERT_THIRD_COUNTS     7400  /* 季军 4.0cm × 1850 */
-#define TROPHY_FORWARD_INSERT_SPEED     100
+#define TROPHY_FORWARD_INSERT_SPEED     130
 #define TROPHY_INSERT_SETTLE_TICKS       30  /* 前插到位后稳定 300ms */
 
 /* 放置完成后后退距离, 按领奖台分别标定.
@@ -141,41 +148,41 @@
 #define TROPHY_BACK_RUNNER_COUNTS     11100  /* 亚军 6.0cm × 1850 */
 #define TROPHY_BACK_CHAMPION_COUNTS    9250  /* 冠军 5.0cm × 1850 */
 #define TROPHY_BACK_THIRD_COUNTS      18500  /* 季军 10.0cm × 1850 */
-#define TROPHY_BACK_CLEAR_SPEED          80  /* 后退脱离速度 */
+#define TROPHY_BACK_CLEAR_SPEED         110  /* 后退脱离速度 */
 #define TROPHY_BACK_SETTLE_TICKS         50  /* 后退到位后稳定 500ms */
 
 /* 后对准一: 视觉对准+直进3cm完成后左移2.5cm(46250 counts, 由直进完成分支预置),
  * 到位后前进40cm(74000 counts). 纯编码器定位, 不再用后八路灰度. */
-#define REAR_ALIGN_LEFT_SPEED   300
+#define REAR_ALIGN_LEFT_SPEED   340
 
 /* 后对准二: 视觉对准+直进3cm完成后后退30cm(54964 counts, 预置), 再左移8.5cm
  * (157250 counts); 左移期间前八路灰度检测到十字交叉线(GS3/GS4)可提前退出. */
-#define REAR_ALIGN_2_LEFT_SPEED  432
-#define REAR_ALIGN_2_BACK_SPEED  220
+#define REAR_ALIGN_2_LEFT_SPEED  480
+#define REAR_ALIGN_2_BACK_SPEED  380  /* 后退提速幅度大: 原220太慢 */
 #define REAR_ALIGN_2_DISTANCE   157250  /* 8.5 cm lateral */
 
 /* Final forward: 80 cm with encoder + gyro heading hold. */
-#define FINAL_FORWARD_SPEED     504
+#define FINAL_FORWARD_SPEED     510
 #define PAUSE_TICKS              50    /* 250 ms pause */
 
 /* Final left-forward: 30 cm at ~62° after second pause. */
 #define PAUSE_2_TICKS           100    /* 0.5 s */
-#define FINAL_LF_BACK_SPEED     240
-#define FINAL_LF_FORWARD_SPEED  240
-#define FINAL_LF_LEFT_SPEED     451
+#define FINAL_LF_BACK_SPEED     270
+#define FINAL_LF_FORWARD_SPEED  270
+#define FINAL_LF_LEFT_SPEED     500
 #define FINAL_LF_DISTANCE     55500   /* 30 cm × 1850 */
 
 
 /* Final rotate 30° CW, then forward 30 cm. */
 #define FINAL_ROTATE_30_SPEED   280
 #define FINAL_ROTATE_30_ANGLE    35.0f
-#define FINAL_FORWARD_2_SPEED    420
+#define FINAL_FORWARD_2_SPEED    480
 
 /* Align to the saved left heading, move left 14.5 cm, then rotate 179° CW. */
 #define PAUSE_GENERIC_TICKS      100   /* 0.5 s */
 #define FINAL_ROTATE_ALIGN_SPEED 280
 #define FINAL_ROTATE_ALIGN_ANGLE  48.0f
-#define FINAL_LEFT_40_SPEED     420
+#define FINAL_LEFT_40_SPEED     480
 #define FINAL_LEFT_FWD_HOLD_SPEED 200 /* minimum effective speed for fore/aft drift correction */
 #define FINAL_ROTATE_180_SPEED  372
 #define FINAL_ROTATE_180_ANGLE  179.0f
