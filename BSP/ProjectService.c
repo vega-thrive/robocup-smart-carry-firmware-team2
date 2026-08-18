@@ -57,6 +57,16 @@ static const Task1PlaceComp task1_place_comp[5] =
     TASK1_PLACE_COMP_E,
 };
 
+/* 5个转盘槽位的转盘口横向偏差补偿 (counts) */
+static const int16_t turret_slot_comp[5] =
+{
+    TURRET_SLOT_COMP_0,
+    TURRET_SLOT_COMP_1,
+    TURRET_SLOT_COMP_2,
+    TURRET_SLOT_COMP_3,
+    TURRET_SLOT_COMP_4,
+};
+
 /* 放置流程状态机 */
 typedef enum {
     PLACE_ALIGN_INITIAL_HEADING = 33,
@@ -1085,7 +1095,9 @@ place_prep_done:
 
         if (vision_job == VISION_JOB_COLOR_PLACE)
         {
-            int left = task1_place_comp[place_seq_index].left_offset;
+            /* 放置点补偿 + 该色块所在槽位的转盘口偏差补偿 */
+            int left = task1_place_comp[place_seq_index].left_offset
+                     + turret_slot_comp[place_slot_idx];
             ChassisPos_Start(-left, left, -left, left);
             __disable_irq();
             route_state = ROUTE_VISION_LEFT_OFFSET;

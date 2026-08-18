@@ -1,5 +1,6 @@
 #include "Servo4.h"
 #include "Task1Mechanism.h"
+#include "TurntableInventory.h"   /* TURRET_SLOT_PWM_OFFSET_* 槽位脉宽偏移 */
 
 /* =================================================================== *
  *  底层：8 路舵机 TIM9 硬件 PWM (20ms 帧周期)
@@ -280,11 +281,21 @@ void Servo4_RotationHome(void)
 
 void Servo4_RotationSetStep(uint8_t step)
 {
+    static const int16_t pwm_offset[ROTATION_SERVO_MAX_STEP + 1] =
+    {
+        TURRET_SLOT_PWM_OFFSET_0,
+        TURRET_SLOT_PWM_OFFSET_1,
+        TURRET_SLOT_PWM_OFFSET_2,
+        TURRET_SLOT_PWM_OFFSET_3,
+        TURRET_SLOT_PWM_OFFSET_4,
+    };
+
     if (step > ROTATION_SERVO_MAX_STEP) step = ROTATION_SERVO_MAX_STEP;
     /* 与任务1色块收取保持一致：直接并持续输出档位 PWM。 */
     Servo4_SetPulse(ROTATION_SERVO_CHANNEL,
                     (uint16_t)(ROTATION_SERVO_HOME_US
-                               + ROTATION_SERVO_STEP_US * step));
+                               + ROTATION_SERVO_STEP_US * step
+                               + pwm_offset[step]));
 }
 
 /* 解锁并直接跳到目标 PWM, 跳过中间旧值, 避免转盘二次抖动. */

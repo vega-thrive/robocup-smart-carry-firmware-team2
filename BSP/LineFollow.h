@@ -121,6 +121,16 @@
 #define TASK1_PLACE_COMP_C  { 3330, 4625 }
 #define TASK1_PLACE_COMP_D  { 4255, 4625 }
 #define TASK1_PLACE_COMP_E  { 3330, 4625 }
+
+/* 5个转盘槽位(500/900/1300/1700/2100us)的转盘口横向偏差补偿 (counts, 8.18标定+验证).
+ * 标定法: 固定A点+黑色, 黑色放各槽位各测3次落点左偏, 各槽平均-总平均(1.43cm) x 1850.
+ * 验证: 槽3(第4物料)3次全准; 槽4(第5物料)平均左偏0.8cm, 补偿调至-1542.
+ * 放置时叠加到 TASK1_PLACE_COMP 的左移补偿上: left = comp.left + slot_comp[idx]. */
+#define TURRET_SLOT_COMP_0  (-987)
+#define TURRET_SLOT_COMP_1   308
+#define TURRET_SLOT_COMP_2   925
+#define TURRET_SLOT_COMP_3  (-185)
+#define TURRET_SLOT_COMP_4  (-1542)
 #define VISION_FORWARD_SPEED     250
 #define VISION_FORWARD_DISTANCE 4625   /* 2.5 cm × 1850 counts/cm (1.4cm+1.1cm) */
 #define VISION_BACK_DISTANCE    4995   /* legacy/shared path: 2.7 cm */

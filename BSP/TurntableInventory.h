@@ -8,6 +8,14 @@
 #define TURNTABLE_COLOR_CODE_MAX   25U
 #define TURNTABLE_TROPHY_CODE      26U
 
+/* 各槽位脉宽附加偏移 (us), 修正槽口与工作口对准.
+ * 任务1槽3(1700us)易外带色块: -40us (实测+40反效果). */
+#define TURRET_SLOT_PWM_OFFSET_0   0
+#define TURRET_SLOT_PWM_OFFSET_1   0
+#define TURRET_SLOT_PWM_OFFSET_2   0
+#define TURRET_SLOT_PWM_OFFSET_3  (-40)
+#define TURRET_SLOT_PWM_OFFSET_4   0
+
 typedef enum
 {
     TURNTABLE_ITEM_EMPTY = 0,

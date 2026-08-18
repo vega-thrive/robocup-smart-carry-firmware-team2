@@ -10,10 +10,20 @@ static uint8_t turntable_captured_count;
 
 static uint16_t TurntableInventory_CalculatePwm(uint8_t slot_index)
 {
-    uint32_t pwm = (uint32_t)turntable_home_pwm_us
-                 + (uint32_t)turntable_step_pwm_us * slot_index;
+    static const int16_t pwm_offset[TURNTABLE_SLOT_COUNT] =
+    {
+        TURRET_SLOT_PWM_OFFSET_0,
+        TURRET_SLOT_PWM_OFFSET_1,
+        TURRET_SLOT_PWM_OFFSET_2,
+        TURRET_SLOT_PWM_OFFSET_3,
+        TURRET_SLOT_PWM_OFFSET_4,
+    };
+    int32_t pwm = (int32_t)turntable_home_pwm_us
+                + (int32_t)turntable_step_pwm_us * slot_index
+                + pwm_offset[slot_index];
 
     if (pwm > 0xFFFFU) pwm = 0xFFFFU;
+    if (pwm < 0) pwm = 0;
     return (uint16_t)pwm;
 }
 
