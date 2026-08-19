@@ -115,20 +115,21 @@
  * 5个放置点(A~E)机械补偿独立标定: {左移counts, 直进counts},
  * 视觉把圆心对准后机械末端到落点的固定偏移各点不同. */
 #define TASK1_PLACE_LEFT_OFFSET_SPEED    100
-/* 实测(8.18): A/C/D/E 偏右0.4cm→3330; B 偏左1.1cm→-185; 复测 A/D 仍偏右0.5cm→4255 */
+/* 8.19实测: A 4255; B 白色进槽0测偏右1.5cm → -185+2775=2590; C/E 3330; D 4255 */
 #define TASK1_PLACE_COMP_A  { 4255, 4625 }
-#define TASK1_PLACE_COMP_B  { -185, 4625 }
+#define TASK1_PLACE_COMP_B  { 2590, 4625 }
 #define TASK1_PLACE_COMP_C  { 3330, 4625 }
 #define TASK1_PLACE_COMP_D  { 4255, 4625 }
 #define TASK1_PLACE_COMP_E  { 3330, 4625 }
 
-/* 5个转盘槽位(500/900/1300/1700/2100us)的转盘口横向偏差补偿 (counts, 8.18标定+验证).
- * 标定法: 固定A点+黑色, 黑色放各槽位各测3次落点左偏, 各槽平均-总平均(1.43cm) x 1850.
- * 验证: 槽3(第4物料)3次全准; 槽4(第5物料)平均左偏0.8cm, 补偿调至-1542.
+/* 5个转盘槽位(500/900/1300/1700/2100us)的转盘口横向偏差补偿 (counts, 8.19半修正).
+ * 算法: 带补偿测残余(中位数) x 0.5 半修正防噪声过拟合.
+ * 8.19残余中位数: 槽0 0.3 / 槽1 0.6 / 槽2 2.2cm → -1265/-247/-1110.
+ * 槽3/4 已验证基本十环, 保持 -185/-1542.
  * 放置时叠加到 TASK1_PLACE_COMP 的左移补偿上: left = comp.left + slot_comp[idx]. */
-#define TURRET_SLOT_COMP_0  (-987)
-#define TURRET_SLOT_COMP_1   308
-#define TURRET_SLOT_COMP_2   925
+#define TURRET_SLOT_COMP_0  (-1265)
+#define TURRET_SLOT_COMP_1  (-247)
+#define TURRET_SLOT_COMP_2  (-1110)
 #define TURRET_SLOT_COMP_3  (-185)
 #define TURRET_SLOT_COMP_4  (-1542)
 #define VISION_FORWARD_SPEED     250
@@ -147,9 +148,9 @@
 
 /* 视觉对准完成后: 固定前进插入距离, 按领奖台分别标定.
  * 亚军/冠军/季军手臂高度不同, 相同前进距离落点不同, 必须独立设置. */
-#define TROPHY_INSERT_RUNNER_COUNTS    7400  /* 亚军 4.0cm × 1850 */
-#define TROPHY_INSERT_CHAMPION_COUNTS  7400  /* 冠军 4.0cm × 1850 */
-#define TROPHY_INSERT_THIRD_COUNTS     7400  /* 季军 4.0cm × 1850 */
+#define TROPHY_INSERT_RUNNER_COUNTS   12025  /* 亚军 6.5cm × 1850 (4+2.5) */
+#define TROPHY_INSERT_CHAMPION_COUNTS 12025  /* 冠军 6.5cm × 1850 (4+2.5) */
+#define TROPHY_INSERT_THIRD_COUNTS    12025  /* 季军 6.5cm × 1850 (4+2.5) */
 #define TROPHY_FORWARD_INSERT_SPEED     130
 #define TROPHY_INSERT_SETTLE_TICKS       30  /* 前插到位后稳定 300ms */
 

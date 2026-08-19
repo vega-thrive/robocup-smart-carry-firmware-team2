@@ -358,8 +358,14 @@ void Servo4_TrophyRotationSafe(void)
 /* 扩展板通道从 CH1 编号，代码内部从 0 编号，因此板上编号=内部编号+1。
  * 逻辑槽位按实车抓取顺序排列：
  * slot0 -> 板上 CH8 (内部 7)，slot1 -> CH6 (内部 5)，
- * slot2 -> CH4 (内部 3)。剩余 CH5/CH7 作为未使用槽位。 */
+ * slot2 -> CH4 (内部 3)。剩余 CH5/CH7 作为未使用槽位。
+ * 任务1 色块夹爪用此数组 (5 个). */
 static const uint8_t little_channels[] = {7U, 5U, 3U, 4U, 6U};
+
+/* 任务2 奖杯夹爪单独映射 (2026-08-19: 物理接线更换, CH4 松动改插 CH5):
+ * slot0 -> 板上 CH8 (内部 7), slot1 -> CH6 (内部 5), slot2 -> CH5 (内部 4).
+ * 不影响任务1 的 little_channels. */
+static const uint8_t trophy_little_channels[] = {7U, 5U, 4U};
 
 /* 任务2各逻辑槽位的独立夹紧 PWM。slot0 是板上 CH8，
  * 实车需要比其他通道多 50us 夹紧量。 */
@@ -398,39 +404,39 @@ void Servo4_LittleAllClose(void)
 void Servo4_TrophyLittleAllOpen(void)
 {
     uint8_t i;
-    for (i = 0U; i < sizeof(little_channels); i++)
-        Servo4_SetPulse(little_channels[i], TROPHY_LITTLE_OPEN_US);
+    for (i = 0U; i < sizeof(trophy_little_channels); i++)
+        Servo4_SetPulse(trophy_little_channels[i], TROPHY_LITTLE_OPEN_US);
 }
 
 void Servo4_TrophyLittleAllClose(void)
 {
     uint8_t i;
-    for (i = 0U; i < sizeof(little_channels); i++)
-        Servo4_SetPulse(little_channels[i], little_close_us[i]);
+    for (i = 0U; i < sizeof(trophy_little_channels); i++)
+        Servo4_SetPulse(trophy_little_channels[i], little_close_us[i]);
 }
 
 void Servo4_TrophyLittleHalfOpenSlot(uint8_t slot_index)
 {
-    if (slot_index >= sizeof(little_channels)) return;
-    Servo4_SetPulse(little_channels[slot_index], TROPHY_LITTLE_HALF_OPEN_US);
+    if (slot_index >= sizeof(trophy_little_channels)) return;
+    Servo4_SetPulse(trophy_little_channels[slot_index], TROPHY_LITTLE_HALF_OPEN_US);
 }
 
 void Servo4_TrophyLittleOpenSlot(uint8_t slot_index)
 {
-    if (slot_index >= sizeof(little_channels)) return;
-    Servo4_SetPulse(little_channels[slot_index], TROPHY_LITTLE_OPEN_US);
+    if (slot_index >= sizeof(trophy_little_channels)) return;
+    Servo4_SetPulse(trophy_little_channels[slot_index], TROPHY_LITTLE_OPEN_US);
 }
 
 void Servo4_TrophyLittleReleaseSlot(uint8_t slot_index)
 {
-    if (slot_index >= sizeof(little_channels)) return;
-    Servo4_SetPulse(little_channels[slot_index], little_release_us[slot_index]);
+    if (slot_index >= sizeof(trophy_little_channels)) return;
+    Servo4_SetPulse(trophy_little_channels[slot_index], little_release_us[slot_index]);
 }
 
 void Servo4_TrophyLittleCloseSlot(uint8_t slot_index)
 {
-    if (slot_index >= sizeof(little_channels)) return;
-    Servo4_SetPulse(little_channels[slot_index], little_close_us[slot_index]);
+    if (slot_index >= sizeof(trophy_little_channels)) return;
+    Servo4_SetPulse(trophy_little_channels[slot_index], little_close_us[slot_index]);
 }
 
 /* 任务1 按槽位操作 (LITTLE_GRIPPER_SEQ_TEST 等调试用) */

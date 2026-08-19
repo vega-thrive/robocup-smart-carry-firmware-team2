@@ -26,10 +26,10 @@
 #define VISION_Y_ENTER_BAND     8
 #define VISION_CENTER_FRAMES    4U
 #define TROPHY_CENTER_FRAMES    4U
-#define TASK1_SEARCH_DELAY_MS   1000U
+#define TASK1_SEARCH_DELAY_MS    500U
 #define TASK1_SEARCH_MOVE_MS     600U
 #define TASK1_SEARCH_SETTLE_MS   200U
-#define TASK1_SEARCH_SPEED        60
+#define TASK1_SEARCH_SPEED       120
 #define VISION_AXIS_HYST        4     /* 轴选择滞环, 防止 X/Y 控制权抖动 */
 #define VISION_Y_SETTLE_MS      150U  /* 反向停车后的等待窗口 */
 #define VISION_FRAME_STOP_MS    250U  /* 无新序号超过此时长立即停车 (15FPS≈3~4帧, 容忍单帧漏检) */
