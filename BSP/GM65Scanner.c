@@ -21,6 +21,11 @@ static uint8_t gm65_rx_byte;
 static uint8_t gm65_ack_index;
 static uint8_t gm65_data_started;
 
+/* 诊断 (扫码测试用) */
+volatile uint32_t gm65_diag_rx_bytes;
+volatile uint8_t  gm65_diag_last_bytes[8];
+volatile uint8_t  gm65_diag_last_index;
+
 static void GM65_StartListen(uint32_t timeout_ms)
 {
     gm65_length = 0U;
@@ -93,6 +98,10 @@ void GM65_OnRxComplete(UART_HandleTypeDef *uart)
 
 void GM65_OnRxByte(uint8_t byte)
 {
+    gm65_diag_rx_bytes++;
+    gm65_diag_last_bytes[gm65_diag_last_index] = byte;
+    gm65_diag_last_index = (uint8_t)((gm65_diag_last_index + 1U) & 7U);
+
     if (gm65_status != GM65_WAITING) return;
 
     if (gm65_data_started == 0U)

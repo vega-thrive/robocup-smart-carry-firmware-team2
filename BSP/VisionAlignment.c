@@ -26,6 +26,7 @@
 #define VISION_Y_ENTER_BAND     8
 #define VISION_CENTER_FRAMES    4U
 #define TROPHY_CENTER_FRAMES    4U
+#define TROPHY_HYST_TIMEOUT_MS   500U  /* 滞环停车超时: 超时后退出滞环继续微调 */
 #define TASK1_SEARCH_DELAY_MS    500U
 #define TASK1_SEARCH_MOVE_MS     600U
 #define TASK1_SEARCH_SETTLE_MS   200U
@@ -68,7 +69,7 @@ const VisionProfileCfg vision_cfg_trophy =
 {
     .target_x         = 208,
     .target_y         = 160,
-    .enter_band       = 18,
+    .enter_band       = 10,
     .hysteresis       = 28,
     .coarse_error     = 47,
     .min_speed        = 80,
@@ -77,7 +78,7 @@ const VisionProfileCfg vision_cfg_trophy =
     .x_move_sign      = -1,
     .y_move_sign      = -1,
     .timeout_ms       = 10000U,
-    .fine_pulse_ms    = 50U,
+    .fine_pulse_ms    = 15U,
     .fine_settle_ms   = 150U,
     .finish_hold_ms   = 300U,
     .max_pulses       = 12U,
@@ -104,6 +105,7 @@ static uint32_t align_settle_until_ms;
 static uint32_t align_finish_at_ms;
 static uint8_t  align_pulse_count;
 static uint8_t  align_in_band;
+static uint32_t align_hyst_until_ms;   /* 滞环停车超时时刻, 0=未计时 */
 static uint8_t  align_coarse_pending;
 static uint8_t  align_coarse_axis;
 static int16_t  align_coarse_dist;
@@ -260,6 +262,7 @@ void VisionAlignment_Init(UART_HandleTypeDef *uart)
     vision_active_axis = 2U;
     vision_last_new_frame_ms = 0U;
     vision_search_start_ms = 0U;
+    align_hyst_until_ms = 0U;
     vision_entry_settle_until = 0U;
     vision_entry_wait_frame = 0U;
     vision_center_settle_until = 0U;
@@ -302,6 +305,7 @@ void VisionAlignment_Start(VisionProfile profile)
     vision_active_axis = 2U;
     vision_last_new_frame_ms = 0U;
     vision_search_start_ms = 0U;
+    align_hyst_until_ms = 0U;
     vision_entry_settle_until = align_started_ms + VISION_ENTRY_SETTLE_MS;
     vision_entry_wait_frame = (active_profile_type == VISION_PROFILE_TASK1) ? 1U : 0U;
     vision_center_settle_until = 0U;
@@ -334,6 +338,7 @@ void VisionAlignment_Restart(void)
     vision_active_axis = 2U;
     vision_last_new_frame_ms = 0U;
     vision_search_start_ms = 0U;
+    align_hyst_until_ms = 0U;
     vision_entry_settle_until = align_started_ms + VISION_ENTRY_SETTLE_MS;
     vision_entry_wait_frame = (active_profile_type == VISION_PROFILE_TASK1) ? 1U : 0U;
     vision_center_settle_until = 0U;
@@ -362,6 +367,7 @@ void VisionAlignment_ResumeAfterCoarse(void)
     vision_active_axis = 2U;
     vision_last_new_frame_ms = 0U;
     vision_search_start_ms = 0U;
+    align_hyst_until_ms = 0U;
     vision_entry_settle_until = HAL_GetTick() + VISION_ENTRY_SETTLE_MS;
     vision_entry_wait_frame = (active_profile_type == VISION_PROFILE_TASK1) ? 1U : 0U;
     vision_center_settle_until = 0U;
@@ -511,6 +517,7 @@ void VisionAlignment_Process(void)
     vision_last_new_frame_ms = now;
     /* 已通过 BAD_XY 检查, 确认是新序号的圆帧: 清零丢圆计时 */
     vision_search_start_ms = 0U;
+    align_hyst_until_ms = 0U;
 
     {
         int error_x;
@@ -746,6 +753,7 @@ void VisionAlignment_Process(void)
             {
                 if (cfg->use_hysteresis)
                     align_in_band = 1U;
+                align_hyst_until_ms = 0U;
                 VisionAlignment_SetTarget(0, 0);
                 vision_diag_code = VISION_DIAG_CENTERED;
                 align_pulse_until_ms = 0U;
@@ -760,7 +768,9 @@ void VisionAlignment_Process(void)
 
             vision_center_count = 0U;
 
-            /* ---- 滞环 (Task2 only) ---- */
+            /* ---- 滞环 (Task2 only) ----
+             * 滞环内停车等待, 但 500ms 未回到完成带则退出滞环重新微调,
+             * 防止误差停在 18~28px 区永久停车直到超时放行(落点偏后). */
             if (cfg->use_hysteresis)
             {
                 if (align_in_band &&
@@ -771,11 +781,21 @@ void VisionAlignment_Process(void)
                     vision_diag_code = VISION_DIAG_CENTERED;
                     align_pulse_until_ms = 0U;
                     align_settle_until_ms = 0U;
+                    if (align_hyst_until_ms == 0U)
+                        align_hyst_until_ms = now + TROPHY_HYST_TIMEOUT_MS;
+                    if ((int32_t)(now - align_hyst_until_ms) >= 0)
+                    {
+                        align_hyst_until_ms = 0U;
+                        align_in_band = 0U;
+                    }
                     return;
                 }
                 if ((abs_x > (int)cfg->hysteresis) ||
                     (abs_y > (int)cfg->hysteresis))
+                {
                     align_in_band = 0U;
+                    align_hyst_until_ms = 0U;
+                }
             }
 
             vision_diag_code = VISION_DIAG_MOVING;
@@ -878,6 +898,7 @@ void VisionAlignment_Cancel(void)
     vision_active_axis = 2U;
     vision_last_new_frame_ms = 0U;
     vision_search_start_ms = 0U;
+    align_hyst_until_ms = 0U;
     (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
     align_status = VISION_ALIGN_IDLE;
 }
@@ -897,6 +918,7 @@ void VisionAlignment_Finish(void)
     vision_active_axis = 2U;
     vision_last_new_frame_ms = 0U;
     vision_search_start_ms = 0U;
+    align_hyst_until_ms = 0U;
     align_status = VISION_ALIGN_IDLE;
 }
 

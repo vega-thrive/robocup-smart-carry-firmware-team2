@@ -45,12 +45,33 @@
 /* Fast return after Task2: align to the absolute heading saved in Home,
  * then drive straight by encoder with gyro heading hold. */
 #define HOME_RETURN_SPEED             400
-#define HOME_RETURN_DISTANCE       370000  /* reverse 200 cm */
-#define HOME_RETURN_RIGHT_DISTANCE  74000  /* 40 cm right component (50 - 10 cm) */
-#define HOME_RETURN_RIGHT_SPEED       180  /* lateral component speed */
+#define HOME_RETURN_DISTANCE       370000  /* reverse 200 cm (保留作参考) */
+#define HOME_RETURN_RIGHT_DISTANCE  46250  /* 25 cm right component (保留作参考) */
+#define HOME_RETURN_RIGHT_SPEED       180  /* lateral component speed (保留作参考) */
 #define HOME_RETURN_MARKER_ARM      37000  /* ignore podium line for first 20 cm */
 #define HOME_RETURN_ALIGN_TIMEOUT     400  /* 2 s at 200 Hz */
 #define HOME_RETURN_ALIGN_STABLE        3  /* fresh gyro frames within 2 deg */
+
+/* 回家灰度检测停车 (8.19, 替代编码器定位):
+ * 固定速度倒车, 前灰度 8 路全黑事件计数 (上升沿), 每条线计数后 200ms 屏蔽
+ * (粗线防重复计数), 第 4 次全黑 → 立即停车 → 后退 10cm. */
+#define HOME_RETURN_GS_STOP_COUNT      4U  /* 全黑事件次数 */
+#define HOME_RETURN_GS_BLANK_MS      200U  /* 每条黑线计数后屏蔽时长 */
+#define HOME_RETURN_DRIVE_SPEED      400   /* 倒车固定速度 */
+#define HOME_RETURN_BACK_DISTANCE   18500  /* 停车后后退 10 cm */
+#define HOME_RETURN_BACK_SPEED       100
+#define HOME_RETURN_GS_MAX_BACK    555000  /* 灰度漏检兜底: 后退300cm强制停车 */
+
+/* ---- 8.19 新回家流程 (放置完第3杯后) ----
+ * 左移10cm → 左转90°(车头向左) → 右移5cm → 巡线(左四路GS1~4全黑停)
+ * → 前进10cm → 右转90°(车头向前) → 后退10cm → 机械臂Task0 → 完赛 */
+#define HOME_LEFT_10_DISTANCE     37000  /* 左移 20cm (8.19 实测改) */
+#define HOME_LEFT_10_SPEED          300
+#define HOME_RIGHT_5_DISTANCE     37000  /* 右移 20cm (8.19 实测改) */
+#define HOME_RIGHT_5_SPEED          300
+#define HOME_FWD_10_DISTANCE      18500  /* 前进 10cm */
+#define HOME_FWD_10_SPEED           300
+/* 回家巡线速度 = 第一次巡线速度(linefollow_task1_speed_active), 同步 */
 
 #define MARKER_SUPPRESS_TICKS   400  /* TRACK_RETURN only: 2 s */
 
@@ -63,12 +84,12 @@
 /* Trophy route: pause, rotate CW, reverse, then three stepped left moves. */
 #define TROPHY_PAUSE_TICKS          100  /* 0.5 s at 200 Hz */
 #define TROPHY_PRE_ROTATE_BACK_DISTANCE 3700 /* 2 cm x 1850 counts/cm */
-#define TROPHY_PRE_ROTATE_BACK_SPEED  220
-#define TROPHY_ROTATE_SPEED         400
+#define TROPHY_PRE_ROTATE_BACK_SPEED  180
+#define TROPHY_ROTATE_SPEED         372
 #define TROPHY_ROTATE_ANGLE        90.0f
-#define TROPHY_BACK_SPEED           380
+#define TROPHY_BACK_SPEED           300
 #define TROPHY_BACK_DISTANCE      70300  /* 38 cm x 1850 counts/cm (34+4) */
-#define TROPHY_LEFT_SPEED           360
+#define TROPHY_LEFT_SPEED           300
 #define TROPHY_LEFT1_DISTANCE     55500  /* first left restored: previous value - 2 cm */
 #define TROPHY_LEFT2_DISTANCE     64750  /* calibrated 3.5 cm lateral travel */
 #define TROPHY_LEFT3_DISTANCE     64750  /* calibrated 3.5 cm lateral travel */
@@ -151,15 +172,15 @@
 #define TROPHY_INSERT_RUNNER_COUNTS   12025  /* 亚军 6.5cm × 1850 (4+2.5) */
 #define TROPHY_INSERT_CHAMPION_COUNTS 12025  /* 冠军 6.5cm × 1850 (4+2.5) */
 #define TROPHY_INSERT_THIRD_COUNTS    12025  /* 季军 6.5cm × 1850 (4+2.5) */
-#define TROPHY_FORWARD_INSERT_SPEED     130
+#define TROPHY_FORWARD_INSERT_SPEED     100
 #define TROPHY_INSERT_SETTLE_TICKS       30  /* 前插到位后稳定 300ms */
 
 /* 放置完成后后退距离, 按领奖台分别标定.
  * 不同姿态下机构伸出水平长度不同, 亚军最低可能需更远. */
-#define TROPHY_BACK_RUNNER_COUNTS     11100  /* 亚军 6.0cm × 1850 */
-#define TROPHY_BACK_CHAMPION_COUNTS    9250  /* 冠军 5.0cm × 1850 */
-#define TROPHY_BACK_THIRD_COUNTS      18500  /* 季军 10.0cm × 1850 */
-#define TROPHY_BACK_CLEAR_SPEED         110  /* 后退脱离速度 */
+#define TROPHY_BACK_RUNNER_COUNTS     12950  /* 亚军 7.0cm × 1850 (6+1) */
+#define TROPHY_BACK_CHAMPION_COUNTS   11100  /* 冠军 6.0cm × 1850 (5+1) */
+#define TROPHY_BACK_THIRD_COUNTS      20350  /* 季军 11.0cm × 1850 (10+1) */
+#define TROPHY_BACK_CLEAR_SPEED          80  /* 后退脱离速度 */
 #define TROPHY_BACK_SETTLE_TICKS         50  /* 后退到位后稳定 500ms */
 
 /* 后对准一: 视觉对准+直进3cm完成后左移2.5cm(46250 counts, 由直进完成分支预置),

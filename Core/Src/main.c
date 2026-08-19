@@ -39,6 +39,7 @@
 /* USER CODE BEGIN PD */
 #define TASK1_CIRCLE_TEST_MODE   0   /* 1=任务1同心圆对准专项测试 */
 #define SERVO_TEST_MODE          0   /* 1=CH2专项测试: 电机禁用, 仅CH2步进旋转; 0=正式比赛 */
+#define QR_SCAN_TEST_MODE        0   /* 1=原地扫码专项测试: 按钮触发 + LCD显示原始字节 */
 #define SERVO_TEST_CH2_INIT_US   500U  /* 测试初始值 */
 #define SERVO_TEST_CH2_STEP_US   400U  /* 每按一次 START_BTN 步进量 */
 /* USER CODE END PD */
@@ -73,6 +74,7 @@ void SystemClock_Config(void);
 #include "ProjectService.h"
 #include "Servo4.h"
 #include "VofaTune.h"
+#include "GM65Scanner.h"
 
 int main(void)
 {
@@ -135,6 +137,59 @@ int main(void)
             VofaTune_Process();
 #endif
             HAL_Delay(10U);
+        }
+    }
+#elif QR_SCAN_TEST_MODE
+    /* ---- 原地扫码专项测试 ----
+     * 每按 START_BTN 触发一次扫码, LCD 显示:
+     * ST 状态 (0=IDLE 1=WAITING 2=READY 3=TIMEOUT 4=OVERFLOW)
+     * RX 原始字节数, 最近8字节 HEX (按时间顺序), 解析文本.
+     * 现象: 扫码器滴滴响但 MCU 未收到 → RX 不涨/字节乱. */
+    LCD_FillScreen(LCD_BLACK);
+    LCD_DrawString_NoDMA(1, 10, "QR SCAN TEST", LCD_WHITE, LCD_BLACK);
+    LCD_DrawString_NoDMA(1, 220, "BTN: SCAN", LCD_GREEN, LCD_BLACK);
+    GM65_Init(&huart1);
+    (void)GM65_StartReceiveIT();
+    {
+        uint8_t last_pressed = 0U;
+        char buf[24];
+        for (;;)
+        {
+            uint8_t pressed = (HAL_GPIO_ReadPin(START_BTN_GPIO_Port,
+                                                START_BTN_Pin) == GPIO_PIN_RESET);
+            if (pressed && !last_pressed)
+            {
+                HAL_Delay(50);
+                (void)GM65_StartScan(3000U);
+            }
+            last_pressed = pressed;
+
+            GM65_Process();
+
+            sprintf(buf, "ST:%d RX:%lu", (int)GM65_GetStatus(),
+                    (unsigned long)gm65_diag_rx_bytes);
+            LCD_DrawString_NoDMA(1, 40, buf, LCD_WHITE, LCD_BLACK);
+            {
+                uint8_t i;
+                uint8_t idx = (uint8_t)((gm65_diag_last_index + 1U) & 7U);
+                char *p = buf;
+                for (i = 0U; i < 8U; i++)
+                {
+                    p += sprintf(p, "%02X ", gm65_diag_last_bytes[idx]);
+                    idx = (uint8_t)((idx + 1U) & 7U);
+                }
+                LCD_DrawString_NoDMA(1, 60, buf, LCD_WHITE, LCD_BLACK);
+            }
+            if (GM65_GetStatus() == GM65_READY)
+            {
+                char text[GM65_TEXT_CAPACITY];
+                if (GM65_TakeText(text, sizeof(text)))
+                {
+                    LCD_DrawString_NoDMA(1, 80, "TXT:", LCD_WHITE, LCD_BLACK);
+                    LCD_DrawString_NoDMA(1, 100, text, LCD_GREEN, LCD_BLACK);
+                }
+            }
+            HAL_Delay(50);
         }
     }
 #elif SERVO_TEST_MODE

@@ -50,7 +50,16 @@ typedef enum
     /* ---- 任务2：收集、放置与回家 ---- */
     ROUTE_TASK2_PREPARE,
 
-    /* ---- 回家 ---- */
+    /* ---- 回家 (8.19 新流程: 标志位+灰度定位) ---- */
+    ROUTE_HOME_LEFT_10,
+    ROUTE_HOME_ROTATE_LEFT,
+    ROUTE_HOME_RIGHT_5,
+    ROUTE_HOME_TRACK,
+    ROUTE_HOME_FWD_10,
+    ROUTE_HOME_ROTATE_FWD,
+    ROUTE_HOME_BACK_10,
+
+    /* ---- 回家 (旧流程, 保留) ---- */
     ROUTE_HOME_RIGHT_SHIFT,
     ROUTE_HOME_RETURN_ALIGN,
     ROUTE_HOME_RETURN_DRIVE,

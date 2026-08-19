@@ -2,7 +2,7 @@
 #include "GM65Scanner.h"
 #include "QrMissionMap.h"
 
-#define COMP_QR_ATTEMPT_TIMEOUT_MS 1000U
+#define COMP_QR_ATTEMPT_TIMEOUT_MS 3000U
 #define COMP_QR_MAX_ATTEMPTS          3U
 
 static volatile CompetitionQrTask competition_qr_task;

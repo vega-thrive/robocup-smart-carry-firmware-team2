@@ -24,4 +24,9 @@ void GM65_OnUartError(void);
 GM65_Status GM65_GetStatus(void);
 uint8_t GM65_TakeText(char *destination, uint16_t capacity);
 
+/* 诊断 (原地扫码专项测试): 原始字节计数 + 最近8字节环形缓冲 */
+extern volatile uint32_t gm65_diag_rx_bytes;
+extern volatile uint8_t  gm65_diag_last_bytes[8];
+extern volatile uint8_t  gm65_diag_last_index;
+
 #endif
