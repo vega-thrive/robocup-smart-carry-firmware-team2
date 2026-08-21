@@ -58,6 +58,7 @@ typedef enum
     ROUTE_HOME_FWD_10,
     ROUTE_HOME_ROTATE_FWD,
     ROUTE_HOME_BACK_10,
+    ROUTE_HOME_RIGHT_25,
 
     /* ---- 回家 (旧流程, 保留) ---- */
     ROUTE_HOME_RIGHT_SHIFT,

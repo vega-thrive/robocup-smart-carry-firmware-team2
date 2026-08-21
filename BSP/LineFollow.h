@@ -25,6 +25,12 @@
 #define TRACK_FIRST_SPEED_TARGET 230
 #define LINE_FOLLOW_TURN_LIMIT   450
 
+/* 收集完成(任务1第5个色块/任务2第3个奖杯)后:
+ * 继续巡线定时, 然后立刻旋转进入放置阶段.
+ * 标志改为计数+定时, 不再依赖黑线检测 (8.20). */
+#define TASK1_COLLECT_DONE_TICKS  700U  /* 任务1: 3.5s @200Hz */
+#define TASK2_COLLECT_DONE_TICKS 1200U  /* 任务2: 6s @200Hz */
+
 
 
 
@@ -58,7 +64,7 @@
 #define HOME_RETURN_GS_STOP_COUNT      4U  /* 全黑事件次数 */
 #define HOME_RETURN_GS_BLANK_MS      200U  /* 每条黑线计数后屏蔽时长 */
 #define HOME_RETURN_DRIVE_SPEED      400   /* 倒车固定速度 */
-#define HOME_RETURN_BACK_DISTANCE   18500  /* 停车后后退 10 cm */
+#define HOME_RETURN_BACK_DISTANCE   27750  /* 停车后后退 15 cm */
 #define HOME_RETURN_BACK_SPEED       100
 #define HOME_RETURN_GS_MAX_BACK    555000  /* 灰度漏检兜底: 后退300cm强制停车 */
 
@@ -67,11 +73,14 @@
  * → 前进10cm → 右转90°(车头向前) → 后退10cm → 机械臂Task0 → 完赛 */
 #define HOME_LEFT_10_DISTANCE     37000  /* 左移 20cm (8.19 实测改) */
 #define HOME_LEFT_10_SPEED          300
-#define HOME_RIGHT_5_DISTANCE     37000  /* 右移 20cm (8.19 实测改) */
+#define HOME_RIGHT_5_DISTANCE     55500  /* 右移 30cm (20+10) */
 #define HOME_RIGHT_5_SPEED          300
-#define HOME_FWD_10_DISTANCE      18500  /* 前进 10cm */
+#define HOME_FWD_10_DISTANCE      55500  /* 触发后前进 30cm */
 #define HOME_FWD_10_SPEED           300
-/* 回家巡线速度 = 第一次巡线速度(linefollow_task1_speed_active), 同步 */
+#define HOME_RIGHT_25_DISTANCE    46250  /* 右移 25cm (触发后) */
+#define HOME_RIGHT_25_SPEED         300
+#define HOME_TRACK_STOP_TICKS       100  /* 停靠线触发后停车 0.5s @200Hz */
+/* 回家巡线速度 = 第一次巡线速度(linefollow_task1_speed_active)的 150% */
 
 #define MARKER_SUPPRESS_TICKS   400  /* TRACK_RETURN only: 2 s */
 

@@ -118,10 +118,9 @@ static uint32_t home_return_last_frame;
 static TrophyPlaceStep trophy_place_step;
 static uint8_t  trophy_place_settle_ticks;
 static uint8_t  trophy_align_started;   /* 0=PLACE_ALIGN 等待主循环启动视觉 */
-static uint8_t  home_gs_black_count;    /* 回家倒车前灰度全黑事件计数 */
-static uint8_t  home_gs_prev_black;     /* 上一帧是否全黑 (上升沿判定) */
-static uint32_t home_gs_blank_until;    /* 全黑计数后屏蔽截止时刻 */
-static uint8_t  home_return_back_active;/* 0=灰度倒车阶段, 1=后退10cm阶段 */
+static uint8_t  home_track_triggered;   /* 停靠线已触发, 锁定停车等待 */
+static uint16_t home_track_stop_ticks;  /* 停车计时 */
+static uint8_t  home_track_stable_ticks;/* 速度收敛计数 */
 static uint8_t  trophy_place_back_active;
 static uint16_t trophy_heading_align_ticks;
 static uint8_t  trophy_heading_stable_frames;
@@ -1719,9 +1718,9 @@ place_prep_done:
     {
         if (++lcd_div >= 10)
         {
-            int d = -(encoder[1] + encoder[2] + encoder[3] + encoder[4]) / 4;
-            ChassisPos_DrawStatus(20, "Home Drive");
-            sprintf(buf, "GS:%u D:%d", (unsigned)home_gs_black_count, d);
+            int d = (int)(-ChassisPos_GetForwardPosition());
+            ChassisPos_DrawStatus(20, "Home Back+Right");
+            sprintf(buf, "D:%d", d);
             ChassisPos_DrawStatus(40, buf);
             lcd_div = 0;
         }
@@ -2723,12 +2722,15 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
             LineFollow_Stop();
             trophy_cam_mode_on = 0U;
             (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
+            home_return_align_ticks = 0U;
+            home_return_stable_frames = 0U;
+            home_return_last_frame = HWT101_GetUpdateCount();
             __disable_irq();
-            route_state = ROUTE_HOME_LEFT_10;
+            route_state = ROUTE_HOME_RETURN_ALIGN;
             __enable_irq();
             mode_entry_tick = 0;
             lcd_div = 0;
-            ChassisPos_DrawStatus(1, "Home Left 10");
+            ChassisPos_DrawStatus(1, "Home Align");
         }
     }
 
@@ -2748,12 +2750,15 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
         int i, black_count, line_state = 0, turn_target;
         Sensor_Get();
 
-        if (mode_entry_tick > 0)
+        /* 收集满5个 → 3s 定时(期间继续巡线) → 立刻旋转90°
+         * 标志改为计数+定时, 不再依赖黑线检测 */
+        if (Task1Color_GetCount() >= TURNTABLE_SLOT_COUNT)
         {
-            LineFollow_Stop();
-            mode_entry_tick++;
-            if (mode_entry_tick >= 100)
+            if (++mode_entry_tick >= TASK1_COLLECT_DONE_TICKS)
             {
+                LineFollow_Stop();
+                ChassisPos_ResetVelocityPid();
+                Servo4_Task1RotationLockNow();
                 ChassisPos_ResetEncoder();
                 HWT101_getAngle_Reset();
                 HeadingHold_Reset();
@@ -2763,37 +2768,28 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                 mode_entry_tick = 0;
                 lcd_div = 0;
                 ChassisPos_DrawStatus(1, "Rotate 90");
+                return;
             }
         }
-        else if ((Task1Color_GetCount() >= TURNTABLE_SLOT_COUNT) &&
-                 GS_state[1] && GS_state[2] &&
-                 GS_state[3] && GS_state[4])
-        {
-            LineFollow_Stop();
-            ChassisPos_ResetVelocityPid();
-            Servo4_Task1RotationLockNow();
-            mode_entry_tick = 1;
+
+        /* 巡线 (收集满后的 0.2s 定时期间同样巡线) */
+        black_count = GS_state[1] + GS_state[2] + GS_state[3] + GS_state[4]
+                    + GS_state[5] + GS_state[6] + GS_state[7] + GS_state[8];
+        if (black_count == 0)
+            turn_target = last_steer;
+        else {
+            line_state = 0;
+            for (i = 1; i <= 8; i++)
+                if (GS_state[i]) line_state += line_weights[i];
+            turn_target = LineFollow_ComputeLinePID(line_state);
+            last_steer = turn_target;
         }
-        else
-        {
-            black_count = GS_state[1] + GS_state[2] + GS_state[3] + GS_state[4]
-                        + GS_state[5] + GS_state[6] + GS_state[7] + GS_state[8];
-            if (black_count == 0)
-                turn_target = last_steer;
-            else {
-                line_state = 0;
-                for (i = 1; i <= 8; i++)
-                    if (GS_state[i]) line_state += line_weights[i];
-                turn_target = LineFollow_ComputeLinePID(line_state);
-                last_steer = turn_target;
-            }
-            debug_line_state = line_state;
-            debug_turn_target = turn_target;
-            LineFollow_SetWheelTargets(linefollow_task1_speed_active + turn_target,
-                                       linefollow_task1_speed_active + turn_target,
-                                       linefollow_task1_speed_active - turn_target,
-                                       linefollow_task1_speed_active - turn_target);
-        }
+        debug_line_state = line_state;
+        debug_turn_target = turn_target;
+        LineFollow_SetWheelTargets(linefollow_task1_speed_active + turn_target,
+                                   linefollow_task1_speed_active + turn_target,
+                                   linefollow_task1_speed_active - turn_target,
+                                   linefollow_task1_speed_active - turn_target);
     }
 
     if (route_state == ROUTE_TRACK_RETURN)
@@ -2880,15 +2876,11 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
         }
 
 
-        /* 前灰度右四路(5~8)全黑 → ROUTE_TROPHY */
-        if (GS_state[5] && GS_state[6] && GS_state[7] && GS_state[8]
-            && marker_suppress_ticks >= MARKER_SUPPRESS_TICKS)
+        /* 收集完成(第3杯) → 5s 定时(期间继续巡线+夹爪收尾) → 立刻进 ROUTE_TROPHY
+         * 标志改为计数+定时, 不再依赖黑线检测 */
+        if (task2_collect_complete)
         {
-            if (!task2_collect_complete)
-            {
-                marker_suppress_ticks = -(int)MARKER_SUPPRESS_TICKS;
-            }
-            else
+            if (++mode_entry_tick >= TASK2_COLLECT_DONE_TICKS)
             {
                 ChassisPos_ResetVelocityPid();
                 HeadingHold_Reset();
@@ -3017,45 +3009,87 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
     if (route_state == ROUTE_HOME_TRACK)
     {
         int i, black_count, line_state = 0, turn_target;
-        int left_bc;
+        int right_bc;
         int track_speed;
 
         Sensor_Get();
-        /* 左四路(GS1~4)至少三路黑 = 压过停靠横线 → 停车前进10cm */
-        left_bc = GS_state[1] + GS_state[2] + GS_state[3] + GS_state[4];
-        if (left_bc >= 3)
+        /* 右四路(GS5~8)至少三路黑 = 压过停靠横线 → 锁定 */
+        right_bc = GS_state[5] + GS_state[6] + GS_state[7] + GS_state[8];
+        if (right_bc >= 3)
+            home_track_triggered = 1U;
+
+        /* 触发后写死流程: 停车(0.5s+速度收敛, 2s兜底) → 以当前朝向为参考
+         * → 前进 30cm (不修正车头) → 右移 25cm → Task0.
+         * 注意不能 return: 必须让 ISR 末尾 ChassisMotor_ControlTick 执行,
+         * 用清零的 wheel_target 真正把电机停住, 否则电机保持巡线 PWM 继续跑. */
+        if (home_track_triggered)
         {
+            uint8_t j;
+            uint8_t stopped = 1U;
+            uint8_t done_stop = 0U;
+
             LineFollow_Stop();
-            ChassisPos_ResetVelocityPid();
-            ChassisPos_ResetEncoder();
-            ChassisPos_Start(HOME_FWD_10_DISTANCE, HOME_FWD_10_DISTANCE,
-                             HOME_FWD_10_DISTANCE, HOME_FWD_10_DISTANCE);
-            route_state = ROUTE_HOME_FWD_10;
-            lcd_div = 0;
-            ChassisPos_DrawStatus(1, "Fwd 10cm");
-            return;
+            for (j = 1U; j <= 4U; j++)
+            {
+                int v = velocity[j];
+                if (v < 0) v = -v;
+                if (v > 20) stopped = 0U;
+            }
+
+            if ((++home_track_stop_ticks >= HOME_TRACK_STOP_TICKS) && stopped)
+            {
+                if (++home_track_stable_ticks >= 3U)
+                    done_stop = 1U;
+            }
+            else if (home_track_stop_ticks >= 400U)
+            {
+                done_stop = 1U;   /* 2s 兜底 */
+            }
+            else
+            {
+                home_track_stable_ticks = 0U;
+            }
+
+            if (done_stop)
+            {
+                /* 写死: 以当前朝向为参考(重置Angle/HeadingHold), 直接前进 30cm */
+                HWT101_getAngle_Reset();
+                HeadingHold_Reset();
+                ChassisPos_ResetVelocityPid();
+                ChassisPos_ResetEncoder();
+                ChassisPos_Start(HOME_FWD_10_DISTANCE, HOME_FWD_10_DISTANCE,
+                                 HOME_FWD_10_DISTANCE, HOME_FWD_10_DISTANCE);
+                route_state = ROUTE_HOME_FWD_10;
+                lcd_div = 0;
+                ChassisPos_DrawStatus(1, "Fwd 30cm");
+                home_track_triggered = 0U;
+                home_track_stable_ticks = 0U;
+            }
         }
 
-        /* 巡线: 灰度加权 PID 差速, 速度与第一次巡线同步 (灰度停车灵敏) */
-        track_speed = linefollow_task1_speed_active;
-        black_count = GS_state[1] + GS_state[2] + GS_state[3] + GS_state[4]
-                    + GS_state[5] + GS_state[6] + GS_state[7] + GS_state[8];
-        if (black_count == 0)
-            turn_target = last_steer;
         else
         {
-            line_state = 0;
-            for (i = 1; i <= 8; i++)
-                if (GS_state[i]) line_state += line_weights[i];
-            turn_target = LineFollow_ComputeLinePID(line_state);
-            last_steer = turn_target;
+            /* 巡线: 灰度加权 PID 差速, 速度 = 第一次巡线速度的 150% */
+            track_speed = (int)((int32_t)linefollow_task1_speed_active * 150 / 100);
+            black_count = GS_state[1] + GS_state[2] + GS_state[3] + GS_state[4]
+                        + GS_state[5] + GS_state[6] + GS_state[7] + GS_state[8];
+            if (black_count == 0)
+                turn_target = last_steer;
+            else
+            {
+                line_state = 0;
+                for (i = 1; i <= 8; i++)
+                    if (GS_state[i]) line_state += line_weights[i];
+                turn_target = LineFollow_ComputeLinePID(line_state);
+                last_steer = turn_target;
+            }
+            debug_line_state = line_state;
+            debug_turn_target = turn_target;
+            LineFollow_SetWheelTargets(track_speed + turn_target,
+                                       track_speed + turn_target,
+                                       track_speed - turn_target,
+                                       track_speed - turn_target);
         }
-        debug_line_state = line_state;
-        debug_turn_target = turn_target;
-        LineFollow_SetWheelTargets(track_speed + turn_target,
-                                   track_speed + turn_target,
-                                   track_speed - turn_target,
-                                   track_speed - turn_target);
     }
 
     if (route_state == ROUTE_HOME_FWD_10)
@@ -3067,9 +3101,29 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
             ChassisPos_ResetVelocityPid();
             HWT101_getAngle_Reset();
             HeadingHold_Reset();
-            route_state = ROUTE_HOME_ROTATE_FWD;
+            route_state = ROUTE_HOME_RIGHT_25;
             lcd_div = 0;
-            ChassisPos_DrawStatus(1, "Rot Fwd 90");
+            ChassisPos_DrawStatus(1, "Right 25cm");
+        }
+    }
+
+    if (route_state == ROUTE_HOME_RIGHT_25)
+    {
+        if (!pos_control_active)
+        {
+            ChassisPos_Start((int)HOME_RIGHT_25_DISTANCE,
+                            -(int)HOME_RIGHT_25_DISTANCE,
+                             (int)HOME_RIGHT_25_DISTANCE,
+                            -(int)HOME_RIGHT_25_DISTANCE);
+        }
+        if (ChassisPos_Update(0, HOME_RIGHT_25_SPEED, 0))
+        {
+            LineFollow_Stop();
+            ChassisPos_ResetVelocityPid();
+            Move_Control(0, 0, 0, 0);
+            route_state = ROUTE_HOME_ARM_RESET;
+            lcd_div = 0;
+            ChassisPos_DrawStatus(1, "Arm Reset");
         }
     }
 
@@ -3100,10 +3154,11 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                 spd = HOME_TURN_SPEED - (int)((a - 70.0f) * 13.2f);
                 if (spd < 120) spd = 120;
             }
-            wheel_target[1] =  spd;
-            wheel_target[2] =  spd;
-            wheel_target[3] = -spd;
-            wheel_target[4] = -spd;
+            /* 逆时针(左转)90°: 车头回到与 home 区一致 */
+            wheel_target[1] = -spd;
+            wheel_target[2] = -spd;
+            wheel_target[3] =  spd;
+            wheel_target[4] =  spd;
         }
     }
 
@@ -3162,14 +3217,11 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                 ChassisPos_ResetVelocityPid();
                 HWT101_getAngle_Reset();
                 HeadingHold_Reset();
-                /* 长距离倒车降积分防 S 型振荡 (KI 3.1 -> 1.0) */
-                HeadingHold_SetGains(HEADING_HOLD_KP, HEADING_HOLD_DRIVE_KI,
-                                     HEADING_HOLD_KD, HEADING_HOLD_LIMIT);
-                /* 灰度检测停车: 固定速度倒车, 全黑事件计数第4次 → 停车后退10cm */
-                home_gs_black_count = 0U;
-                home_gs_prev_black = 0U;
-                home_gs_blank_until = 0U;
-                home_return_back_active = 0U;
+                /* 恢复 88f2037 旧版: 编码器斜向倒车回家 (200cm + 右移分量) */
+                ChassisPos_Start(-(int)HOME_RETURN_DISTANCE + (int)HOME_RETURN_RIGHT_DISTANCE,
+                                 -(int)HOME_RETURN_DISTANCE - (int)HOME_RETURN_RIGHT_DISTANCE,
+                                 -(int)HOME_RETURN_DISTANCE + (int)HOME_RETURN_RIGHT_DISTANCE,
+                                 -(int)HOME_RETURN_DISTANCE - (int)HOME_RETURN_RIGHT_DISTANCE);
                 route_state = ROUTE_HOME_RETURN_DRIVE;
             LineFollow_LatchSpeeds();
                 ChassisPos_DrawStatus(1, "Home Drive");
@@ -3193,91 +3245,21 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
         }
     }
 
-    /* ---- ROUTE_HOME_RETURN_DRIVE: 固定速度倒车 + 前灰度全黑停车 ---- */
+    /* ---- ROUTE_HOME_RETURN_DRIVE: 编码器斜向倒车回家 (88f2037 旧版) ---- */
     if (route_state == ROUTE_HOME_RETURN_DRIVE)
     {
-        if (home_return_back_active == 0U)
+        if (ChassisPos_Update(linefollow_home_return_speed_active,
+                              HOME_RETURN_RIGHT_SPEED,
+                              HeadingHold_GetFreshCorrection()))
         {
-            int bc;
-            int hc;
-            int back_dist;
-
-            Sensor_Get();
-            bc = GS_state[1] + GS_state[2] + GS_state[3] + GS_state[4]
-               + GS_state[5] + GS_state[6] + GS_state[7] + GS_state[8];
-
-            /* 全黑事件计数: 上升沿 + 200ms 屏蔽 (粗线防重复计数), 第4次停车 */
-            if (bc == 8)
-            {
-                if (!home_gs_prev_black &&
-                    ((int32_t)(HAL_GetTick() - home_gs_blank_until) >= 0))
-                {
-                    home_gs_black_count++;
-                    home_gs_blank_until = HAL_GetTick() + HOME_RETURN_GS_BLANK_MS;
-                    if (home_gs_black_count >= HOME_RETURN_GS_STOP_COUNT)
-                    {
-                        LineFollow_Stop();
-                        ChassisPos_ResetVelocityPid();
-                        ChassisPos_ResetEncoder();
-                        ChassisPos_Start(-(int32_t)HOME_RETURN_BACK_DISTANCE,
-                                         -(int32_t)HOME_RETURN_BACK_DISTANCE,
-                                         -(int32_t)HOME_RETURN_BACK_DISTANCE,
-                                         -(int32_t)HOME_RETURN_BACK_DISTANCE);
-                        home_return_back_active = 1U;
-                        ChassisPos_DrawStatus(1, "Back 10cm");
-                    }
-                }
-                home_gs_prev_black = 1U;
-            }
-            else
-            {
-                home_gs_prev_black = 0U;
-            }
-
-            if (home_return_back_active == 0U)
-            {
-                /* 固定速度倒车 + 航向保持 (低积分防 S 型) */
-                hc = HeadingHold_GetFreshCorrection();
-                wheel_target[1] = -HOME_RETURN_DRIVE_SPEED - hc;
-                wheel_target[2] = -HOME_RETURN_DRIVE_SPEED - hc;
-                wheel_target[3] = -HOME_RETURN_DRIVE_SPEED + hc;
-                wheel_target[4] = -HOME_RETURN_DRIVE_SPEED + hc;
-
-                /* 灰度漏检兜底: 编码器后退超限强制停车 */
-                back_dist = -(encoder[1] + encoder[2] + encoder[3] + encoder[4]) / 4;
-                if (back_dist > (int)HOME_RETURN_GS_MAX_BACK)
-                {
-                    LineFollow_Stop();
-                    ChassisPos_ResetVelocityPid();
-                    Move_Control(0, 0, 0, 0);
-                    HeadingHold_SetGains(HEADING_HOLD_KP, HEADING_HOLD_KI,
-                                         HEADING_HOLD_KD, HEADING_HOLD_LIMIT);
-                    home_return_align_ticks = 0U;
-                    home_return_stable_frames = 0U;
-                    home_return_last_frame = HWT101_GetUpdateCount();
-                    route_state = ROUTE_HOME_FINAL_ALIGN;
-                    ChassisPos_DrawStatus(1, "Final Heading");
-                }
-            }
-        }
-        else
-        {
-            /* 停车后后退 10cm */
-            if (ChassisPos_Update(HOME_RETURN_BACK_SPEED, 0,
-                                  HeadingHold_GetFreshCorrection()))
-            {
-                LineFollow_Stop();
-                ChassisPos_ResetVelocityPid();
-                Move_Control(0, 0, 0, 0);
-                /* 回家完成, 恢复默认航向增益 */
-                HeadingHold_SetGains(HEADING_HOLD_KP, HEADING_HOLD_KI,
-                                     HEADING_HOLD_KD, HEADING_HOLD_LIMIT);
-                home_return_align_ticks = 0U;
-                home_return_stable_frames = 0U;
-                home_return_last_frame = HWT101_GetUpdateCount();
-                route_state = ROUTE_HOME_FINAL_ALIGN;
-                ChassisPos_DrawStatus(1, "Final Heading");
-            }
+            LineFollow_Stop();
+            ChassisPos_ResetVelocityPid();
+            Move_Control(0, 0, 0, 0);
+            home_return_align_ticks = 0U;
+            home_return_stable_frames = 0U;
+            home_return_last_frame = HWT101_GetUpdateCount();
+            route_state = ROUTE_HOME_FINAL_ALIGN;
+            ChassisPos_DrawStatus(1, "Final Heading");
         }
     }
 

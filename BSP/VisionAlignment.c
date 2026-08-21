@@ -447,7 +447,14 @@ void VisionAlignment_Process(void)
         if (!VisionAlignment_WheelsStopped())
             return;
         if (!MaxiCam_GetLatest(&frame, ALIGN_FRAME_MAX_AGE))
+        {
+            /* 入口即丢圆: 放弃入口等待, 进入丢帧搜索循环, 不卡死原地 */
+            vision_entry_wait_frame = 0U;
+            if (vision_search_start_ms == 0U)
+                vision_search_start_ms = now;
+            VisionAlignment_Task1SearchY(now);
             return;
+        }
         align_last_sequence = frame.sequence;
         vision_last_new_frame_ms = now;
         vision_entry_wait_frame = 0U;
