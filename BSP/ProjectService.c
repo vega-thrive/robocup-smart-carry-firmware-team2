@@ -106,6 +106,8 @@ static uint8_t  task2_place_index;
 static uint8_t  task2_prep_step;
 static volatile uint8_t task2_transition_step;
 static volatile uint16_t task2_transition_qr_ticks;
+static uint16_t task2_transition_cam_ticks;   /* 摄像头就绪等待计时 (200Hz) */
+static int32_t collect_done_dist;             /* 收集满后冲刺段累计前向位移 (counts) */
 static uint8_t  task2_collect_complete;
 static uint8_t  task2_collect_done;
 static float home_forward_heading;
@@ -2259,7 +2261,7 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
             }
 
             /* 绝对航向精对准: 稳定在 left_heading_absolute ±2° 连续3帧.
-             * 超时兜底: 超过 20 ticks (100ms) 仍未对准则强制放行左移11cm,
+             * 超时兜底: 超过 20 ticks (100ms) 仍未对准则强制放行,
              * 防止陀螺仪噪声卡在 2° 边界时无限摇摆. */
             final_align_tick++;
             if (final_align_tick > 20)
@@ -2269,11 +2271,10 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                 final_left_stage = 0;
                 ChassisPos_ResetVelocityPid();
                 ChassisPos_ResetEncoder();
-                ChassisPos_Start(-203500, 203500, -203500, 203500);
-                route_state = ROUTE_FINAL_LEFT_40;
+                route_state = ROUTE_FINAL_ALIGN_FWD;
                 mode_entry_tick = 0;
                 lcd_div = 0;
-                ChassisPos_DrawStatus(1, "Left 11 cm");
+                ChassisPos_DrawStatus(1, "Fwd 4cm");
                 return;
             }
 
@@ -2296,11 +2297,10 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                     final_left_stage = 0;
                     ChassisPos_ResetVelocityPid();
                     ChassisPos_ResetEncoder();
-                    ChassisPos_Start(-203500, 203500, -203500, 203500);
-                    route_state = ROUTE_FINAL_LEFT_40;
+                    route_state = ROUTE_FINAL_ALIGN_FWD;
                     mode_entry_tick = 0;
                     lcd_div = 0;
-                    ChassisPos_DrawStatus(1, "Left 11 cm");
+                    ChassisPos_DrawStatus(1, "Fwd 4cm");
                     return;
                 }
             }
@@ -2326,6 +2326,32 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                 LineFollow_Stop();
                 final_left_heading_stable_ticks = 0;
             }
+        }
+    }
+
+    if (route_state == ROUTE_FINAL_ALIGN_FWD)
+    {
+        /* 回正完成后前进 4cm, 再进行左移11cm (防撞色块).
+         * 必须先重置航向基准: FINAL_ROTATE_ALIGN 裸转后 Angle 停在 ~48°,
+         * 不归零则 HeadingHold 会把人强行拉回 0° (表现为继续旋转). */
+        if (!pos_control_active)
+        {
+            HWT101_getAngle_Reset();
+            HeadingHold_Reset();
+            ChassisPos_Start(TASK1_ALIGN_FWD_DISTANCE, TASK1_ALIGN_FWD_DISTANCE,
+                             TASK1_ALIGN_FWD_DISTANCE, TASK1_ALIGN_FWD_DISTANCE);
+        }
+        if (ChassisPos_Update(TASK1_ALIGN_FWD_SPEED, 0,
+                              HeadingHold_GetFreshCorrection()))
+        {
+            LineFollow_Stop();
+            ChassisPos_ResetVelocityPid();
+            ChassisPos_ResetEncoder();
+            ChassisPos_Start(-203500, 203500, -203500, 203500);
+            route_state = ROUTE_FINAL_LEFT_40;
+            mode_entry_tick = 0;
+            lcd_div = 0;
+            ChassisPos_DrawStatus(1, "Left 11 cm");
         }
     }
 
@@ -2420,7 +2446,10 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
         {
         case 0U:
             Task1Color_Stop();
-            (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
+            /* 8.21: 不再提前发 STOP. 此前 STOP 后摄像头空闲 4~10s
+             * (QR+机械臂+左移+179°旋转), 模式2命令被 MaixCAM 丢弃,
+             * 导致任务2无法进入奖杯识别. 保持 CIRCLE 运行, case 8 再
+             * 以 STOP+150ms 的短间隔切模式2. */
             ChassisPos_ResetVelocityPid();
             HWT101_getAngle_Reset();
             HeadingHold_Reset();
@@ -2549,6 +2578,42 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
             break;
 
         case 8U:
+            /* STOP + 150ms 后 TROPHY_WHITE: 短间隔切换 (MaixCAM 脚本要求
+             * 先 STOP 再切模式; 不再重发, 避免重复命令打断摄像头初始化) */
+            (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
+            (void)MaxiCam_SetMode(MAXICAM_MODE_TROPHY_WHITE);
+            task2_transition_cam_ticks = 0U;
+            task2_transition_step = 9U;
+            break;
+
+        case 9U:
+            /* 就绪等待: 收到任意摄像头帧立即放行; 1.5s 超时强制进入巡线, 防卡死 */
+            {
+                MaxiCam_Frame frame;
+                task2_transition_cam_ticks++;
+                if (MaxiCam_GetLatest(&frame, 250U))
+                {
+                    task2_transition_step = 10U;
+                }
+                else if (task2_transition_cam_ticks >= 300U)
+                {
+                    task2_transition_step = 10U;
+                }
+                if (++lcd_div >= 10)
+                {
+                    char cbuf[24];
+                    sprintf(cbuf, "Cam:%u RX:%u P:%u",
+                            (unsigned)task2_transition_cam_ticks,
+                            (unsigned)maxicam_diag_rx_bytes,
+                            (unsigned)maxicam_diag_packets);
+                    ChassisPos_DrawStatus(1, cbuf);
+                    lcd_div = 0;
+                }
+                LineFollow_Stop();
+            }
+            break;
+
+        case 10U:
             trophy_det_confirm = 0U;
             trophy_det_last_seq = 0U;
             trophy_det_gap_until_ms = 0U;
@@ -2561,8 +2626,6 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
             LineFollow_ResetLinePID();
             last_steer = 0;
             marker_suppress_ticks = 0;
-            (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
-            (void)MaxiCam_SetMode(MAXICAM_MODE_TROPHY_WHITE);
             task2_transition_step = 0U;
             route_state = ROUTE_TRACK_RETURN;
             LineFollow_LatchSpeeds();
@@ -2750,11 +2813,17 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
         int i, black_count, line_state = 0, turn_target;
         Sensor_Get();
 
-        /* 收集满5个 → 3s 定时(期间继续巡线) → 立刻旋转90°
-         * 标志改为计数+定时, 不再依赖黑线检测 */
+        /* 收集满5个 → 继续巡线固定距离(35cm) → 立刻旋转90°
+         * 8.21 编码器定距离替代定时, 速度变化不影响旋转点;
+         * 超时兜底 2×原定时, 防黑线丢失/打滑时距离达不到而卡死 */
         if (Task1Color_GetCount() >= TURNTABLE_SLOT_COUNT)
         {
-            if (++mode_entry_tick >= TASK1_COLLECT_DONE_TICKS)
+            int df = (velocity[1] + velocity[2]
+                    + velocity[3] + velocity[4]) / 4;
+            if (mode_entry_tick == 0) collect_done_dist = 0;
+            collect_done_dist += df;
+            if ((collect_done_dist >= (int32_t)TASK1_COLLECT_DONE_DISTANCE) ||
+                (++mode_entry_tick >= TASK1_COLLECT_DONE_TIMEOUT_TICKS))
             {
                 LineFollow_Stop();
                 ChassisPos_ResetVelocityPid();
@@ -2870,17 +2939,29 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
             LCD_DrawString_NoDMA(1, 20, buf, LCD_WHITE, LCD_BLACK);
             sprintf(buf, "LAST:%c SLOT:%u", rc, (unsigned)trophy_last_slot);
             LCD_DrawString_NoDMA(1, 40, buf, LCD_WHITE, LCD_BLACK);
-            sprintf(buf, "SPD:%d", collect_speed);
+            sprintf(buf, "SPD:%d D:%ld", collect_speed,
+                    (long)collect_done_dist);
             LCD_DrawString_NoDMA(1, 60, buf, LCD_WHITE, LCD_BLACK);
+            sprintf(buf, "RX:%u P:%u TX:%u",
+                    (unsigned)maxicam_diag_rx_bytes,
+                    (unsigned)maxicam_diag_packets,
+                    (unsigned)maxicam_diag_mode_tx);
+            LCD_DrawString_NoDMA(1, 80, buf, LCD_WHITE, LCD_BLACK);
             lcd_div = 0;
         }
 
 
-        /* 收集完成(第3杯) → 5s 定时(期间继续巡线+夹爪收尾) → 立刻进 ROUTE_TROPHY
-         * 标志改为计数+定时, 不再依赖黑线检测 */
+        /* 收集完成(第3杯) → 继续巡线固定距离(55cm, 期间夹爪收尾) → 立刻进 ROUTE_TROPHY
+         * 8.21 编码器定距离替代定时, 速度变化不影响放置点;
+         * 超时兜底 2×原定时, 防黑线丢失/打滑时距离达不到而卡死 */
         if (task2_collect_complete)
         {
-            if (++mode_entry_tick >= TASK2_COLLECT_DONE_TICKS)
+            int df = (velocity[1] + velocity[2]
+                    + velocity[3] + velocity[4]) / 4;
+            if (mode_entry_tick == 0) collect_done_dist = 0;
+            collect_done_dist += df;
+            if ((collect_done_dist >= (int32_t)TASK2_COLLECT_DONE_DISTANCE) ||
+                (++mode_entry_tick >= TASK2_COLLECT_DONE_TIMEOUT_TICKS))
             {
                 ChassisPos_ResetVelocityPid();
                 HeadingHold_Reset();

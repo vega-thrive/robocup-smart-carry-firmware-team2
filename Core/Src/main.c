@@ -101,6 +101,9 @@ int main(void)
 
     /* Init Servo (TIM9 software PWM) */
     Servo4_Init();
+    /* CH2 上电立即回零: Servo4_Init() 使所有通道 PWM 为 0 (无保持力矩),
+     * 不归零则转盘初始槽位物理上不确定. */
+    Servo4_RotationHome();
     /* CH3..CH7 must be open as soon as the controller powers up, including
      * while waiting for the start button.  Task2 changes to its calibrated
      * open value at entry and closes only after all trophies are collected. */

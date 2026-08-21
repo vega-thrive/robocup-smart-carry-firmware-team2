@@ -22,14 +22,18 @@
 
 /* Encoder counts per 5 ms control period. */
 #define LINE_FOLLOW_SPEED_TARGET 580
-#define TRACK_FIRST_SPEED_TARGET 230
+#define TRACK_FIRST_SPEED_TARGET 276  /* 286 略降 */
 #define LINE_FOLLOW_TURN_LIMIT   450
 
 /* 收集完成(任务1第5个色块/任务2第3个奖杯)后:
- * 继续巡线定时, 然后立刻旋转进入放置阶段.
- * 标志改为计数+定时, 不再依赖黑线检测 (8.20). */
-#define TASK1_COLLECT_DONE_TICKS  700U  /* 任务1: 3.5s @200Hz */
-#define TASK2_COLLECT_DONE_TICKS 1200U  /* 任务2: 6s @200Hz */
+ * 继续巡线固定编码器距离, 然后立刻旋转进入放置阶段.
+ * 8.21 改为编码器定距离 (8.20 曾用定时, 速度变化会导致旋转点漂移).
+ * 8.21 先用理论值实车校准: 任务1 = 260×700, 任务2 = 280×1200 (速度×原定时).
+ * TIMEOUT 为原定时的 2 倍, 防黑线丢失/打滑时距离达不到而卡死. */
+#define TASK1_COLLECT_DONE_DISTANCE   163800U  /* 理论 182000 减10% */
+#define TASK2_COLLECT_DONE_DISTANCE   250280U  /* 287280 减20cm (37000 counts) */
+#define TASK1_COLLECT_DONE_TIMEOUT_TICKS 1400U /* 7s @200Hz */
+#define TASK2_COLLECT_DONE_TIMEOUT_TICKS 1400U /* 7s @200Hz */
 
 
 
@@ -45,7 +49,7 @@
 #define HOME_FIXED_LEFTBACK_FWD_SPEED  240
 #define HOME_FIXED_LEFTBACK_LEFT_SPEED 290
 #define HOME_FIXED_LEFTBACK_BACK_DIST  70300 /* about 3.8 cm backward */
-#define HOME_FIXED_LEFTBACK_LEFT_DIST  77700 /* about 4.2 cm left */
+#define HOME_FIXED_LEFTBACK_LEFT_DIST   9250 /* 5.0 cm × 1850 (8.21 修正标定) */
 #define HOME_FIXED_SETTLE_TICKS       30    /* 150 ms */
 
 /* Fast return after Task2: align to the absolute heading saved in Home,
@@ -99,10 +103,10 @@
 #define TROPHY_BACK_SPEED           300
 #define TROPHY_BACK_DISTANCE      70300  /* 38 cm x 1850 counts/cm (34+4) */
 #define TROPHY_LEFT_SPEED           300
-#define TROPHY_LEFT1_DISTANCE     55500  /* first left restored: previous value - 2 cm */
+#define TROPHY_LEFT1_DISTANCE     11100  /* 6cm × 1850 (8.22) */
 #define TROPHY_LEFT2_DISTANCE     64750  /* calibrated 3.5 cm lateral travel */
 #define TROPHY_LEFT3_DISTANCE     64750  /* calibrated 3.5 cm lateral travel */
-#define TROPHY_GRAB_FAST_SPEED       250  /* 收集巡线适度提速 */
+#define TROPHY_GRAB_FAST_SPEED       280  /* 298 额外降低 */
 #define TROPHY_GRAB_SLOW_SPEED       250  /* 当前收集阶段保持统一速度 */
 #define TROPHY_PLACE_SETTLE_TICKS         80  /* 转盘旋转稳定等待 */
 #define TROPHY_ROTATE_SAFE_SETTLE_TICKS   80  /* 转盘回安全位稳定等待 */
@@ -139,7 +143,11 @@
 #define CURVE_FORWARD_SPEED        500
 #define CURVE_RIGHT_SPEED           47   /* 遗留: ChassisPos_SetCurveTarget 使用 */
 #define CURVE_RIGHT_MOVE_SPEED     230  /* faster while preserving diagonal ratio */
-#define CURVE_ENCODER_COUNTS      77700  /* 前向 42 cm × 1850 */
+#define CURVE_ENCODER_COUNTS      70300  /* 前向 38 cm × 1850 */
+
+/* FINAL_ROTATE_ALIGN 回正完成后、FINAL_LEFT_40 左移11cm 前: 前进 4cm (8.21) */
+#define TASK1_ALIGN_FWD_DISTANCE  7400   /* 4cm × 1850 */
+#define TASK1_ALIGN_FWD_SPEED       200
 
 /* 任务1视觉对准后：左移1.2cm，再固定航向直进2.5cm放置。
  * 5个放置点(A~E)机械补偿独立标定: {左移counts, 直进counts},
@@ -178,9 +186,9 @@
 
 /* 视觉对准完成后: 固定前进插入距离, 按领奖台分别标定.
  * 亚军/冠军/季军手臂高度不同, 相同前进距离落点不同, 必须独立设置. */
-#define TROPHY_INSERT_RUNNER_COUNTS   12025  /* 亚军 6.5cm × 1850 (4+2.5) */
-#define TROPHY_INSERT_CHAMPION_COUNTS 12025  /* 冠军 6.5cm × 1850 (4+2.5) */
-#define TROPHY_INSERT_THIRD_COUNTS    12025  /* 季军 6.5cm × 1850 (4+2.5) */
+#define TROPHY_INSERT_RUNNER_COUNTS    6013  /* 亚军 3.25cm × 1850 (原6.5cm减半) */
+#define TROPHY_INSERT_CHAMPION_COUNTS  6013  /* 冠军 3.25cm × 1850 (原6.5cm减半) */
+#define TROPHY_INSERT_THIRD_COUNTS     6013  /* 季军 3.25cm × 1850 (原6.5cm减半) */
 #define TROPHY_FORWARD_INSERT_SPEED     100
 #define TROPHY_INSERT_SETTLE_TICKS       30  /* 前插到位后稳定 300ms */
 
