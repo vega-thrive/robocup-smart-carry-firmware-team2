@@ -13,10 +13,14 @@
 #define ROTATION_SERVO_HOME_US     500U
 #define ROTATION_SERVO_STEP_US     400U
 #define ROTATION_SERVO_MAX_STEP      4U
-#define TROPHY_ROTATION_HOME_US   1260U
+#define TROPHY_ROTATION_HOME_US    900U  /* 槽1: 8.22 硬件原因, 1顶替原本2 */
 #define TROPHY_ROTATION_STEP_US    400U
 #define TROPHY_ROTATION_MAX_STEP     2U
-#define TROPHY_ROTATION_SAFE_US   1260U
+/* 任务2奖杯收集槽位 PWM (500基准): 槽1/3/4 (8.22, 原本槽2/3/4)
+ * 8.22 收集也减60us (与放置槽口对准一致) */
+#define TROPHY_ROTATION_SLOT_1_US   840U
+#define TROPHY_ROTATION_SLOT_3_US  1600U  /* 1700-40-60 */
+#define TROPHY_ROTATION_SLOT_4_US  2040U
 
 typedef struct
 {
@@ -337,10 +341,15 @@ void Servo4_TrophyRotationHome(void)
 
 void Servo4_TrophyRotationSetStep(uint8_t step)
 {
+    static const uint16_t slot_us[TROPHY_ROTATION_MAX_STEP + 1U] =
+    {
+        TROPHY_ROTATION_SLOT_1_US,
+        TROPHY_ROTATION_SLOT_3_US,
+        TROPHY_ROTATION_SLOT_4_US
+    };
+
     if (step > TROPHY_ROTATION_MAX_STEP) step = TROPHY_ROTATION_MAX_STEP;
-    Servo4_SetPulse(ROTATION_SERVO_CHANNEL,
-                    (uint16_t)(TROPHY_ROTATION_HOME_US
-                               + TROPHY_ROTATION_STEP_US * step));
+    Servo4_SetPulse(ROTATION_SERVO_CHANNEL, slot_us[step]);
 }
 
 void Servo4_TrophyRotationLock(void)

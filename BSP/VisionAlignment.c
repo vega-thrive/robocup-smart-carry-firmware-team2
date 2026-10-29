@@ -4,6 +4,7 @@
 
 #define VISION_ENTRY_SETTLE_MS  250U
 #define VISION_CENTER_SETTLE_MS 200U
+#define VISION_HOVER_MS         500U  /* 8.22: 滞环带停留超时, 防15s超时前插 */
 #define VISION_STOP_VEL_MAX      20
 
 /* 共享常量 (两套配置不变) */
@@ -31,6 +32,11 @@
 #define TASK1_SEARCH_MOVE_MS     600U
 #define TASK1_SEARCH_SETTLE_MS   200U
 #define TASK1_SEARCH_SPEED       120
+/* 奖杯放置丢圆搜索: 幅度缩小 (80×200ms ≈ 1.7cm), 防止搜索移动撞到讲台 */
+#define TROPHY_SEARCH_DELAY_MS   500U
+#define TROPHY_SEARCH_MOVE_MS    200U
+#define TROPHY_SEARCH_SETTLE_MS  150U
+#define TROPHY_SEARCH_SPEED       80
 #define VISION_AXIS_HYST        4     /* 轴选择滞环, 防止 X/Y 控制权抖动 */
 #define VISION_Y_SETTLE_MS      150U  /* 反向停车后的等待窗口 */
 #define VISION_FRAME_STOP_MS    250U  /* 无新序号超过此时长立即停车 (15FPS≈3~4帧, 容忍单帧漏检) */
@@ -44,7 +50,7 @@ const VisionProfileCfg vision_cfg_task1 =
     /* 与MaixCAM画面红色参考点/CAL_TARGET保持一致。机械末端固定偏移另行标定。 */
     .target_x         = 208,
     .target_y         = 160,
-    .enter_band       = 18,
+    .enter_band       = 8,   /* 8.22: kp 分支读此值 (原常量 8px, 保持十环) */
     .hysteresis       = 0,
     .coarse_error     = 26,
     .min_speed        = 80,
@@ -69,7 +75,7 @@ const VisionProfileCfg vision_cfg_trophy =
 {
     .target_x         = 208,
     .target_y         = 160,
-    .enter_band       = 5,     /* 8.21: 完成带 10px≈0.8cm 太宽 → 5px≈0.4cm */
+    .enter_band       = 4,     /* 8.22: 完成带 8px≈0.7cm 仍太宽 → 4px≈0.35cm */
     .hysteresis       = 28,
     .coarse_error     = 47,
     .min_speed        = 80,
@@ -78,13 +84,13 @@ const VisionProfileCfg vision_cfg_trophy =
     .x_move_sign      = -1,
     .y_move_sign      = -1,
     .timeout_ms       = 15000U, /* 8.21: 10s→15s, 给足收敛时间 */
-    .fine_pulse_ms    = 40U,   /* 8.21: 15ms→40ms, 每脉冲 0.13cm→0.35cm */
+    .fine_pulse_ms    = 40U,
     .fine_settle_ms   = 150U,
     .finish_hold_ms   = 300U,
-    .max_pulses       = 60U,   /* 8.21: 30→60, 收敛能力 ~21cm */
-    .use_hysteresis   = 1,
-    .use_coarse       = 1,
-    .use_kp_speed     = 0,
+    .max_pulses       = 60U,
+    .use_hysteresis   = 0,
+    .use_coarse       = 0,
+    .use_kp_speed     = 1,   /* 8.22: 脉冲式车几乎不动 → 改 kp 连续逼近 (与任务1一致) */
     .coarse_px_to_counts = 27,
     .coarse_min       = 1110,
     .coarse_max       = 2775,
@@ -131,6 +137,7 @@ static uint32_t vision_entry_settle_until;
 static uint8_t  vision_entry_wait_frame;
 static uint32_t vision_center_settle_until;
 static uint32_t vision_center_stop_sequence;
+static uint32_t vision_hover_until_ms;   /* 8.22: 滞环带停留超时时刻 */
 static uint8_t  vision_active_axis;      /* 0=X 1=Y 2=未选择 */
 static uint32_t vision_last_new_frame_ms;  /* 最后一个新序号帧的时间戳 */
 /* 连续无有效圆帧的起始时刻, 0=当前有有效圆. 无效帧(丢帧/BAD_XY)不会刷新它,
@@ -188,38 +195,56 @@ static void VisionAlignment_SetTarget(int forward, int left)
     if (primask == 0U) __enable_irq();
 }
 
-/* Task1 丢圆后沿 Y 轴作对称搜索：前、停、后、停、前。
- * 每个完整周期理论净位移为零，避免搜圆动作持续把固定距离误差放大。 */
+/* 丢圆后沿 Y 轴作对称搜索：前、停、后、停、前。
+ * 每个完整周期理论净位移为零，避免搜圆动作持续把固定距离误差放大。
+ * 奖杯放置用缩小幅度 (TROPHY_SEARCH_*), 防止搜索移动撞到讲台. */
 static void VisionAlignment_Task1SearchY(uint32_t now)
 {
     uint32_t base_ms;
     uint32_t phase_ms;
     uint32_t cycle_ms;
+    uint32_t delay_ms;
+    uint32_t move_ms;
+    uint32_t settle_ms;
     int forward;
+    int speed;
+
+    if (active_profile_type == VISION_PROFILE_TROPHY)
+    {
+        delay_ms  = TROPHY_SEARCH_DELAY_MS;
+        move_ms   = TROPHY_SEARCH_MOVE_MS;
+        settle_ms = TROPHY_SEARCH_SETTLE_MS;
+        speed     = TROPHY_SEARCH_SPEED;
+    }
+    else
+    {
+        delay_ms  = TASK1_SEARCH_DELAY_MS;
+        move_ms   = TASK1_SEARCH_MOVE_MS;
+        settle_ms = TASK1_SEARCH_SETTLE_MS;
+        speed     = TASK1_SEARCH_SPEED;
+    }
 
     base_ms = (vision_search_start_ms != 0U) ?
               vision_search_start_ms : align_started_ms;
-    if ((now - base_ms) < TASK1_SEARCH_DELAY_MS)
+    if ((now - base_ms) < delay_ms)
     {
         VisionAlignment_SetTarget(0, 0);
         return;
     }
 
-    cycle_ms = 4U * TASK1_SEARCH_MOVE_MS +
-               2U * TASK1_SEARCH_SETTLE_MS;
-    phase_ms = (now - base_ms - TASK1_SEARCH_DELAY_MS) % cycle_ms;
+    cycle_ms = 4U * move_ms + 2U * settle_ms;
+    phase_ms = (now - base_ms - delay_ms) % cycle_ms;
 
-    if (phase_ms < TASK1_SEARCH_MOVE_MS)
-        forward = TASK1_SEARCH_SPEED;
-    else if (phase_ms < (TASK1_SEARCH_MOVE_MS + TASK1_SEARCH_SETTLE_MS))
+    if (phase_ms < move_ms)
+        forward = speed;
+    else if (phase_ms < (move_ms + settle_ms))
         forward = 0;
-    else if (phase_ms < (3U * TASK1_SEARCH_MOVE_MS + TASK1_SEARCH_SETTLE_MS))
-        forward = -TASK1_SEARCH_SPEED;
-    else if (phase_ms < (3U * TASK1_SEARCH_MOVE_MS +
-                         2U * TASK1_SEARCH_SETTLE_MS))
+    else if (phase_ms < (3U * move_ms + settle_ms))
+        forward = -speed;
+    else if (phase_ms < (3U * move_ms + 2U * settle_ms))
         forward = 0;
     else
-        forward = TASK1_SEARCH_SPEED;
+        forward = speed;
 
     VisionAlignment_SetTarget(forward, 0);
     vision_speed_x = 0;
@@ -267,6 +292,7 @@ void VisionAlignment_Init(UART_HandleTypeDef *uart)
     vision_entry_wait_frame = 0U;
     vision_center_settle_until = 0U;
     vision_center_stop_sequence = 0U;
+    vision_hover_until_ms = 0U;
     (void)MaxiCam_StartReceiveIT();
 }
 
@@ -310,6 +336,7 @@ void VisionAlignment_Start(VisionProfile profile)
     vision_entry_wait_frame = (active_profile_type == VISION_PROFILE_TASK1) ? 1U : 0U;
     vision_center_settle_until = 0U;
     vision_center_stop_sequence = 0U;
+    vision_hover_until_ms = 0U;
     (void)MaxiCam_SetMode(MAXICAM_MODE_STOP);
     (void)MaxiCam_SetMode(MAXICAM_MODE_CIRCLE);
 }
@@ -343,6 +370,7 @@ void VisionAlignment_Restart(void)
     vision_entry_wait_frame = (active_profile_type == VISION_PROFILE_TASK1) ? 1U : 0U;
     vision_center_settle_until = 0U;
     vision_center_stop_sequence = 0U;
+    vision_hover_until_ms = 0U;
 }
 
 void VisionAlignment_ResumeAfterCoarse(void)
@@ -372,6 +400,7 @@ void VisionAlignment_ResumeAfterCoarse(void)
     vision_entry_wait_frame = (active_profile_type == VISION_PROFILE_TASK1) ? 1U : 0U;
     vision_center_settle_until = 0U;
     vision_center_stop_sequence = 0U;
+    vision_hover_until_ms = 0U;
 }
 
 /* =================================================================== *
@@ -472,7 +501,8 @@ void VisionAlignment_Process(void)
          * 否则摄像头识别循环会不断重启，屏幕已有圆也来不及上报。 */
         if (vision_search_start_ms == 0U)
             vision_search_start_ms = now;
-        if (active_profile_type == VISION_PROFILE_TASK1)
+        if ((active_profile_type == VISION_PROFILE_TASK1) ||
+            (active_profile_type == VISION_PROFILE_TROPHY))
             VisionAlignment_Task1SearchY(now);
         return;
     }
@@ -485,6 +515,8 @@ void VisionAlignment_Process(void)
     vision_diag_seq  = frame.sequence;
     vision_diag_age_ms = now - frame.received_at_ms;
 
+    /* 8.22 修正: 放置对准始终用模式1圆帧 (Start 固定切 CIRCLE, 蓝十字锚定
+     * 圆心即模式1检测; 此前误改为奖杯码26导致所有帧 BAD_MODE → 车不动) */
     if ((frame.data[0] != 1U) ||
         (frame_x == 0xFFFFU) || (frame_y == 0xFFFFU) ||
         (frame_x >= 416U) || (frame_y >= 320U))
@@ -496,7 +528,8 @@ void VisionAlignment_Process(void)
         vision_diag_code = (frame.data[0] != 1U) ? VISION_DIAG_BAD_MODE : VISION_DIAG_BAD_XY;
         if (vision_search_start_ms == 0U)
             vision_search_start_ms = now;
-        if (active_profile_type == VISION_PROFILE_TASK1)
+        if ((active_profile_type == VISION_PROFILE_TASK1) ||
+            (active_profile_type == VISION_PROFILE_TROPHY))
             VisionAlignment_Task1SearchY(now);
         return;
     }
@@ -569,8 +602,8 @@ void VisionAlignment_Process(void)
             /* ---- 中心候选滞环: 进带停车, 4 帧确认; 超过退出带才重启 ---- */
             if (!vision_center_candidate)
             {
-                if ((abs_x <= VISION_X_ENTER_BAND) &&
-                    (abs_y <= VISION_Y_ENTER_BAND))
+                if ((abs_x <= (int)cfg->enter_band) &&
+                    (abs_y <= (int)cfg->enter_band))
                 {
                     VisionAlignment_SetTarget(0, 0);
                     vision_speed_x = 0;
@@ -608,8 +641,8 @@ void VisionAlignment_Process(void)
                 if ((int32_t)(frame.sequence - vision_center_stop_sequence) <= 0)
                     return;
 
-                if ((abs_x <= VISION_X_ENTER_BAND) &&
-                    (abs_y <= VISION_Y_ENTER_BAND))
+                if ((abs_x <= (int)cfg->enter_band) &&
+                    (abs_y <= (int)cfg->enter_band))
                 {
                     if (++vision_center_count >= VISION_CENTER_FRAMES)
                     {
@@ -619,13 +652,31 @@ void VisionAlignment_Process(void)
                     return;
                 }
 
-                /* A settled fresh frame outside the 8 px acceptance band must
-                 * resume correction. Do not park forever in the old 8..12 px
-                 * hysteresis zone. */
+                /* 8.22 出带滞环: 误差 ≤ enter_band×2 保持 candidate 确认.
+                 * 原来误差略超完成带立即重启, 检测抖动在带边缘(3~6px)
+                 * 无限徘徊 → 15s 超时 → 从没对准的位置强制前插 */
+                if ((abs_x <= ((int)cfg->enter_band * 2)) &&
+                    (abs_y <= ((int)cfg->enter_band * 2)))
+                {
+                    /* 滞环带停留超时: 抖动在4~8px 无法进入 ≤4px 完成带,
+                     * 500ms 视为已收敛到最佳 → 放行 (防15s超时随机前插) */
+                    if (vision_hover_until_ms == 0U)
+                        vision_hover_until_ms = now + VISION_HOVER_MS;
+                    if ((int32_t)(now - vision_hover_until_ms) >= 0)
+                    {
+                        vision_hover_until_ms = 0U;
+                        vision_center_count = 0U;
+                        align_status = VISION_ALIGN_DONE;
+                    }
+                    return;
+                }
+
                 vision_center_candidate = 0U;
                 vision_center_count = 0U;
                 vision_center_settle_until = 0U;
                 vision_center_stop_sequence = 0U;
+    vision_hover_until_ms = 0U;
+                vision_hover_until_ms = 0U;
             }
 
             vision_diag_code = VISION_DIAG_MOVING;

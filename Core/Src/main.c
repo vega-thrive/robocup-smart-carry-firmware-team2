@@ -38,7 +38,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define TASK1_CIRCLE_TEST_MODE   0   /* 1=任务1同心圆对准专项测试 */
-#define SERVO_TEST_MODE          0   /* 1=CH2专项测试: 电机禁用, 仅CH2步进旋转; 0=正式比赛 */
+#define SERVO_TEST_MODE          0   /* 1=小舵机张开专项测试: 电机禁用; 0=正式比赛 */
 #define QR_SCAN_TEST_MODE        0   /* 1=原地扫码专项测试: 按钮触发 + LCD显示原始字节 */
 #define SERVO_TEST_CH2_INIT_US   500U  /* 测试初始值 */
 #define SERVO_TEST_CH2_STEP_US   400U  /* 每按一次 START_BTN 步进量 */
@@ -196,17 +196,17 @@ int main(void)
         }
     }
 #elif SERVO_TEST_MODE
-    /* ---- CH2 专项测试状态: 电机禁用, 仅 CH2 旋转 ----
-     * 上电 CH2=500; 每按 START_BTN +400, 2100 后回到 500 循环.
-     * 不启动 TIM7/ProjectService, 四轮保持 0 PWM 禁用. */
+    /* ---- 小舵机张开专项测试: 电机禁用, 仅 CH3~CH7 小爪张开 ----
+     * 不启动 TIM7/ProjectService, 四轮保持 0 PWM 禁用.
+     * 按 START_BTN 切换 张开(1600us) ↔ 夹紧(2000us). */
     LCD_FillScreen(LCD_BLACK);
-    LCD_DrawString_NoDMA(1, 40, "SERVO CH2 TEST", LCD_WHITE, LCD_BLACK);
+    LCD_DrawString_NoDMA(1, 40, "LITTLE SERVO TEST", LCD_WHITE, LCD_BLACK);
     {
-        uint8_t step = 0U;
+        uint8_t opened = 1U;
         uint8_t last_pressed = 0U;
         char buf[32];
 
-        Servo4_SetPulse(2U, SERVO_TEST_CH2_INIT_US);
+        Servo4_LittleAllOpen();
         for (;;)
         {
             uint8_t pressed = (HAL_GPIO_ReadPin(START_BTN_GPIO_Port,
@@ -215,13 +215,21 @@ int main(void)
             if (pressed && !last_pressed)
             {
                 HAL_Delay(50);  /* debounce */
-                step = (step >= 4U) ? 0U : (uint8_t)(step + 1U);
-                Servo4_SetPulse(2U, (uint16_t)(SERVO_TEST_CH2_INIT_US
-                                + (uint16_t)SERVO_TEST_CH2_STEP_US * step));
+                if (opened)
+                {
+                    Servo4_LittleAllClose();
+                    opened = 0U;
+                }
+                else
+                {
+                    Servo4_LittleAllOpen();
+                    opened = 1U;
+                }
             }
             last_pressed = pressed;
 
-            sprintf(buf, "STEP:%d PWM:%u   ", step, (unsigned)Servo4_GetPulse(2U));
+            sprintf(buf, "LITTLE:%s PWM:%u", opened ? "OPEN " : "CLOSE",
+                    (unsigned)Servo4_GetPulse(3U));
             LCD_DrawString_NoDMA(1, 80, buf, LCD_WHITE, LCD_BLACK);
             HAL_Delay(10);
         }

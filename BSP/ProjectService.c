@@ -94,7 +94,10 @@ typedef enum {
     PLACE_ROTATE_SAFE_SETTLE   = 24,
     PLACE_CLOSE_GRIPPER        = 25,
     PLACE_TRANSPORT_POSE       = 26,
-    PLACE_FINISH               = 20
+    PLACE_FINISH               = 20,
+    PLACE_ROTATE_RAMP          = 34,  /* 8.22: 转盘缓转防甩奖杯 */
+    PLACE_ROTATE_SAFE_RAMP     = 35,
+    PLACE_DETACH_BACK          = 36   /* 8.22: 释放后小退脱离奖杯, 再收爪 */
 } TrophyPlaceStep;
 
 static uint8_t  place_slot_idx;
@@ -108,6 +111,10 @@ static volatile uint8_t task2_transition_step;
 static volatile uint16_t task2_transition_qr_ticks;
 static uint16_t task2_transition_cam_ticks;   /* 摄像头就绪等待计时 (200Hz) */
 static int32_t collect_done_dist;             /* 收集满后冲刺段累计前向位移 (counts) */
+/* 8.22 任务2奖杯收集槽位 (硬件原因: 槽1/3/4, PWM 900/1660/2100us) */
+static const uint8_t t2_trophy_capture_slots[3] = { 1U, 3U, 4U };
+static uint8_t  home_reposition_phase;/* 回家换位停车阶段 0/1/2 */
+static uint8_t  home_arm0_finish_done;/* 1=抬臂Task0后直接完赛 (停靠换位路径) */
 static uint8_t  task2_collect_complete;
 static uint8_t  task2_collect_done;
 static float home_forward_heading;
@@ -200,6 +207,18 @@ static const TrophyPlaceProfile *TrophyPlace_GetProfile(uint8_t place_index)
 }
 
 static uint8_t TrophyPlace_Process(uint8_t place_index);
+
+/* 8.22: 转盘物理槽位(1/3/4) → 奖杯夹爪逻辑槽位(0/1/2).
+ * 夹爪按收集顺序分配 (trophy_little_channels[0/1/2] = CH8/CH6/CH5),
+ * 不能直接用转盘槽位号当夹爪索引 (槽3/4 会越界不放开, 槽1 开错夹爪). */
+static uint8_t TrophyLittleSlotFromTurret(uint8_t turret_slot)
+{
+    TurntableSlot slot;
+    if (!TurntableInventory_GetSlot(turret_slot, &slot))
+        return 0U;
+    return (slot.capture_order > 0U)
+         ? (uint8_t)(slot.capture_order - 1U) : 0U;
+}
 
 /* 最后转向时除了控制角度，还用四轮编码器平均位移抑制前后漂移。
  * rot_speed > 0/< 0 分别表示两个旋转方向；平移纠偏限幅为 60，
@@ -344,6 +363,8 @@ static uint8_t TrophyDetect_CollectSeen(void)
         return 0U;
     trophy_det_last_seq = frame.sequence;
 
+    /* 8.22 恢复6008862检测: 1帧确认 + gap400ms, 无锁定.
+     * 锁定30cm会挡住间距<30cm的第3个奖杯 → 收集不完不夹爪 */
     if ((int32_t)(HAL_GetTick() - trophy_det_gap_until_ms) < 0)
         return 0U;
 
@@ -505,9 +526,19 @@ static uint8_t TrophyPlace_Process(uint8_t place_index)
         int dist = (place_index == 0U) ? (int)TROPHY_LEFT1_DISTANCE
                  : (place_index == 1U) ? (int)TROPHY_LEFT2_DISTANCE
                  :                       (int)TROPHY_LEFT3_DISTANCE;
+        const Task1ArmPose *t0 = Task1Mechanism_GetTask0Pose();
 
+        /* 8.22: 切换位置期间机械臂慢速收到 Task0 (竖直收拢, 比冠军姿态更
+         * 防撞台); 左移完成后 PLACE_PREPARE_TARGET_POSE 再慢速降回目标姿态. */
         if (!pos_control_active)
+        {
+            (void)Servo4_ArmRampTickSlow(t0->big_arm_us, t0->small_arm_us);
             ChassisPos_Start(-dist, dist, -dist, dist);
+        }
+        else
+        {
+            (void)Servo4_ArmRampTickSlow(t0->big_arm_us, t0->small_arm_us);
+        }
 
         hc = HeadingHold_GetFreshCorrection();
         if (ChassisPos_Update(0, TROPHY_LEFT_SPEED, hc))
@@ -659,18 +690,30 @@ static uint8_t TrophyPlace_Process(uint8_t place_index)
         {
             place_slot_idx = slot_idx;
             place_pwm_us   = pwm;
-            Servo4_RotationUnlockTo(pwm);
         }
         else
         {
             place_slot_idx = place_index;
             place_pwm_us   = TurntableInventory_GetPwmForSlot(place_index);
-            Servo4_RotationUnlockTo(place_pwm_us);
         }
         trophy_place_settle_ticks = 0U;
-        trophy_place_step = PLACE_ROTATE_SETTLE;
+        /* 8.22: 缓转防甩, 到位后 SETTLE */
+        trophy_place_step = PLACE_ROTATE_RAMP;
         break;
     }
+
+    case PLACE_ROTATE_RAMP:
+        LineFollow_Stop();
+        ChassisPos_ResetVelocityPid();
+        Move_Control(0, 0, 0, 0);
+        /* 8.22: 放置时在原槽位 PWM 上减 60us (槽口对准修正) */
+        if (Servo4_RotationRampTick((uint16_t)(place_pwm_us -
+                                               TROPHY_PLACE_PWM_OFFSET)))
+        {
+            trophy_place_settle_ticks = 0U;
+            trophy_place_step = PLACE_ROTATE_SETTLE;
+        }
+        break;
 
     case PLACE_ROTATE_SETTLE:
         LineFollow_Stop();
@@ -696,7 +739,8 @@ static uint8_t TrophyPlace_Process(uint8_t place_index)
         LineFollow_Stop();
         if (++trophy_place_settle_ticks >= TROPHY_RELEASE_SETTLE_TICKS)
         {
-            Servo4_TrophyLittleHalfOpenSlot(place_slot_idx);
+            Servo4_TrophyLittleHalfOpenSlot(
+                TrophyLittleSlotFromTurret(place_slot_idx));
             trophy_place_settle_ticks = 0U;
             trophy_place_step = PLACE_HALF_OPEN;
         }
@@ -706,7 +750,8 @@ static uint8_t TrophyPlace_Process(uint8_t place_index)
         LineFollow_Stop();
         if (++trophy_place_settle_ticks >= TROPHY_HALF_OPEN_WAIT_TICKS)
         {
-            Servo4_TrophyLittleOpenSlot(place_slot_idx);
+            Servo4_TrophyLittleOpenSlot(
+                TrophyLittleSlotFromTurret(place_slot_idx));
             trophy_place_settle_ticks = 0U;
             trophy_place_step = PLACE_FULL_OPEN;
         }
@@ -716,7 +761,8 @@ static uint8_t TrophyPlace_Process(uint8_t place_index)
         LineFollow_Stop();
         if (++trophy_place_settle_ticks >= GRIPPER_OPEN_WAIT_TICKS)
         {
-            Servo4_TrophyLittleReleaseSlot(place_slot_idx);
+            Servo4_TrophyLittleReleaseSlot(
+                TrophyLittleSlotFromTurret(place_slot_idx));
             trophy_place_settle_ticks = 0U;
             trophy_place_step = PLACE_RELEASE_DETACH;
         }
@@ -736,7 +782,33 @@ static uint8_t TrophyPlace_Process(uint8_t place_index)
         if (++trophy_place_settle_ticks >= TROPHY_DROP_SETTLE_TICKS)
         {
             trophy_place_settle_ticks = 0U;
-            trophy_place_step = PLACE_LIFT_CLEAR;
+            trophy_place_back_active = 0U;
+            trophy_place_step = PLACE_DETACH_BACK;
+        }
+        break;
+
+    case PLACE_DETACH_BACK:
+        /* 8.22: 放→退→再夹. 释放后小退3cm让奖杯完全脱离夹爪,
+         * 再收爪/抬臂就不会带起奖杯 */
+        if (!trophy_place_back_active)
+        {
+            ChassisPos_ResetEncoder();
+            ChassisPos_ResetVelocityPid();
+            ChassisPos_Start(-(int)TROPHY_DETACH_BACK_DISTANCE,
+                             -(int)TROPHY_DETACH_BACK_DISTANCE,
+                             -(int)TROPHY_DETACH_BACK_DISTANCE,
+                             -(int)TROPHY_DETACH_BACK_DISTANCE);
+            trophy_place_back_active = 1U;
+        }
+        hc = HeadingHold_GetFreshCorrection();
+        if (ChassisPos_Update(TROPHY_BACK_CLEAR_SPEED, 0, hc))
+        {
+            LineFollow_Stop();
+            ChassisPos_ResetVelocityPid();
+            Move_Control(0, 0, 0, 0);
+            trophy_place_back_active = 0U;
+            trophy_place_settle_ticks = 0U;
+            trophy_place_step = PLACE_CLOSE_GRIPPER;
         }
         break;
 
@@ -759,6 +831,14 @@ static uint8_t TrophyPlace_Process(uint8_t place_index)
         break;
 
     case PLACE_BACK_CLEAR:
+        if (place_index == 2U)
+        {
+            /* 8.22: 季军放完不后退, 直接抬臂转车头进入回家流程 */
+            trophy_place_back_active = 0U;
+            trophy_place_settle_ticks = 0U;
+            trophy_place_step = PLACE_BACK_SETTLE;
+            break;
+        }
         if (!trophy_place_back_active)
         {
             int32_t back = -profile->back_distance;
@@ -787,9 +867,18 @@ static uint8_t TrophyPlace_Process(uint8_t place_index)
 
     case PLACE_ROTATE_SAFE:
         LineFollow_Stop();
-        Servo4_TrophyRotationSafe();
         trophy_place_settle_ticks = 0U;
-        trophy_place_step = PLACE_ROTATE_SAFE_SETTLE;
+        /* 8.22: 回安全位也缓转, 防甩剩余奖杯 */
+        trophy_place_step = PLACE_ROTATE_SAFE_RAMP;
+        break;
+
+    case PLACE_ROTATE_SAFE_RAMP:
+        LineFollow_Stop();
+        if (Servo4_RotationRampTick(TROPHY_ROTATION_SAFE_US))
+        {
+            trophy_place_settle_ticks = 0U;
+            trophy_place_step = PLACE_ROTATE_SAFE_SETTLE;
+        }
         break;
 
     case PLACE_ROTATE_SAFE_SETTLE:
@@ -797,15 +886,17 @@ static uint8_t TrophyPlace_Process(uint8_t place_index)
         if (++trophy_place_settle_ticks >= TROPHY_ROTATE_SAFE_SETTLE_TICKS)
         {
             trophy_place_settle_ticks = 0U;
-            trophy_place_step = PLACE_CLOSE_GRIPPER;
+            trophy_place_step = PLACE_TRANSPORT_POSE;
         }
         break;
 
     case PLACE_CLOSE_GRIPPER:
         LineFollow_Stop();
-        Servo4_TrophyLittleCloseSlot(place_slot_idx);
+        /* 8.22: 奖杯已脱离(小退后), 收回夹爪再抬臂, 防带起奖杯 */
+        Servo4_TrophyLittleCloseSlot(
+            TrophyLittleSlotFromTurret(place_slot_idx));
         trophy_place_settle_ticks = 0U;
-        trophy_place_step = PLACE_TRANSPORT_POSE;
+        trophy_place_step = PLACE_LIFT_CLEAR;
         break;
 
     case PLACE_TRANSPORT_POSE:
@@ -849,12 +940,28 @@ void ProjectService_Run(void)
         {
             if (task2_place_index == 0U)
                 VisionAlignment_Start(VISION_PROFILE_TROPHY);
-            else if (task2_place_index == 2U)
-                /* 季军: 平地放置, 用任务1连续P控制 (无脉冲蠕动, 完成带8px) */
-                VisionAlignment_Start(VISION_PROFILE_TASK1);
             else
+                /* 8.22: 三个奖杯统一 TROPHY profile (kp连续 + 奖杯码26).
+                 * 原季军特判用 TASK1 profile (expect 圆码1), 但摄像头是
+                 * 模式2(码26), 全部帧被判 BAD_MODE → 车不动 → 季军放置不准. */
                 VisionAlignment_Restart();
             trophy_align_started = 1U;
+        }
+
+        /* 8.22 诊断 (主循环显示, 避免 ISR 里 LCD 与主循环并发花屏):
+         * 对准状态码 6=动 4=已居中 1=无帧 2=坏模式 3=坏坐标 5=超时 */
+        if ((trophy_phase >= 4U) && (trophy_phase <= 6U) &&
+            (trophy_place_step == PLACE_ALIGN))
+        {
+            if (++lcd_div >= 20)
+            {
+                sprintf(buf, "A:%u X:%d Y:%d",
+                        (unsigned)vision_diag_code,
+                        (int)vision_diag_err_x,
+                        (int)vision_diag_err_y);
+                ChassisPos_DrawStatus(80, buf);
+                lcd_div = 0;
+            }
         }
     }
 
@@ -1182,19 +1289,11 @@ place_prep_done:
     {
         if (place_step == 0U)
         {
-            uint16_t pre_pwm;
-            uint16_t delta;
             char buf[24];
 
             LineFollow_Stop();
-            pre_pwm = Servo4_GetPulse(2U);
-            Servo4_RotationUnlockTo(place_pwm_us);
-
-            delta = (pre_pwm > place_pwm_us)
-                    ? (pre_pwm - place_pwm_us)
-                    : (place_pwm_us - pre_pwm);
-            mode_entry_tick = (int)(40 + (int)delta / 20);
-
+            /* 8.22: 不再直接跳转 (会把转盘上其他色块甩飞), 改用缓转,
+             * place_step 1 由 RotationRampTick 推进到位 */
             sprintf(buf, "PL:%d S:%d P:%u",
                     place_seq_index + 1, place_slot_idx,
                     (unsigned)place_pwm_us);
@@ -1205,8 +1304,7 @@ place_prep_done:
         }
         else if (place_step == 1U)
         {
-            lcd_div++;
-            if (lcd_div >= (unsigned)mode_entry_tick)
+            if (Servo4_RotationRampTick(place_pwm_us))
             {
                 if (vision_job == VISION_JOB_COLOR_PLACE)
                 {
@@ -1420,7 +1518,8 @@ place_prep_done:
         if (task2_prep_step == 0U)
         {
             LineFollow_Stop();
-            TurntableInventory_Init(1260U, 400U);
+            TurntableInventory_Init(500U, 400U);  /* 8.22 硬件问题: 与任务1同槽位基准 */
+            TurntableInventory_SetCaptureOrder(t2_trophy_capture_slots, 3U);
             Servo4_TrophyRotationHome();
             Servo4_TrophyLittleAllOpen();
             task2_capture_index = 0U;
@@ -1907,14 +2006,11 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                   HOME_FIXED_LEFTBACK_LEFT_SPEED,
                   HeadingHold_GetFreshCorrection());
             Sensor_Get();
-            {
-                int bc = GS_state[1] + GS_state[2] + GS_state[3] + GS_state[4]
-                        + GS_state[5] + GS_state[6] + GS_state[7] + GS_state[8];
-                if (bc == 2 && GS_state[4] && GS_state[5])
-                    mode_entry_tick++;
-                else
-                    mode_entry_tick = 0;
-            }
+            /* 8.22: 退出条件改为 GS6 检测到黑线 (连续3帧) 或走满编码器距离 */
+            if (GS_state[6])
+                mode_entry_tick++;
+            else
+                mode_entry_tick = 0;
             if (pos_done || mode_entry_tick >= 3)
             {
                 LineFollow_Stop();
@@ -2489,7 +2585,8 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
             break;
 
         case 2U:
-            TurntableInventory_Init(1260U, 400U);
+            TurntableInventory_Init(500U, 400U);  /* 8.22 硬件问题: 与任务1同槽位基准 */
+            TurntableInventory_SetCaptureOrder(t2_trophy_capture_slots, 3U);
             Servo4_TrophyLittleAllOpen();
             task2_capture_index = 0U;
             task2_place_index = 0U;
@@ -2779,7 +2876,8 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                 trophy_place_back_active = 0U;
             }
         }
-        /* Phase 6: 三个奖杯放置完成 → 回家 */
+        /* Phase 6: 三个奖杯放置完成 → 8.22 巡线回家
+         * (季军不后退) → 机械臂Task0 → 转车头 → Flat → 巡线 → 停靠 → 换位停车 */
         else
         {
             LineFollow_Stop();
@@ -2788,12 +2886,13 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
             home_return_align_ticks = 0U;
             home_return_stable_frames = 0U;
             home_return_last_frame = HWT101_GetUpdateCount();
+            home_arm0_finish_done = 0U;
             __disable_irq();
-            route_state = ROUTE_HOME_RETURN_ALIGN;
+            route_state = ROUTE_HOME_TRACK_ARM0;
             __enable_irq();
             mode_entry_tick = 0;
             lcd_div = 0;
-            ChassisPos_DrawStatus(1, "Home Align");
+            ChassisPos_DrawStatus(1, "Arm Task0");
         }
     }
 
@@ -2893,6 +2992,7 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
                     trophy_det_count++;
                     trophy_last_rank = (uint8_t)rank;
                     trophy_last_slot = cap_slot;
+                    /* 8.22: 不停车, 低速巡线中直接跳转 (槽1/3/4: 900/1660/2100) */
                     Servo4_TrophyRotationSetStep(task2_capture_index);
                 }
 
@@ -2912,6 +3012,7 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
             trophy_ticks++;
             if (trophy_ticks == TROPHY_GRIP_CLOSE_TICKS)
             {
+                /* 8.22 恢复 AllClose 一起夹 (6008862 能夹) */
                 Servo4_TrophyLittleAllClose();
             }
             if (trophy_ticks >= TROPHY_GRIP_CLOSE_TICKS)
@@ -3254,6 +3355,321 @@ void ProjectService_OnTimerElapsed(TIM_HandleTypeDef *htim)
             route_state = ROUTE_HOME_ARM_RESET;
             lcd_div = 0;
             ChassisPos_DrawStatus(1, "Arm Reset");
+        }
+    }
+
+    /* ================================================================ *
+     *  8.22 巡线回家: Task0 → 旋转 → Flat → 巡线 → 停靠 → 换位停车 → 完赛
+     * ================================================================ */
+
+    /* 放完第3杯(不后退) → 机械臂收起到 Task0 (防旋转碰撞) */
+    if (route_state == ROUTE_HOME_TRACK_ARM0)
+    {
+        LineFollow_Stop();
+        {
+            const Task1ArmPose *t0 = Task1Mechanism_GetTask0Pose();
+            if (Servo4_ArmRampTick(t0->big_arm_us, t0->small_arm_us))
+            {
+                ChassisPos_ResetVelocityPid();
+                ChassisPos_ResetEncoder();
+                HWT101_getAngle_Reset();
+                HeadingHold_Reset();
+                home_return_align_ticks = 0U;
+                home_return_stable_frames = 0U;
+                home_return_last_frame = HWT101_GetUpdateCount();
+                if (home_arm0_finish_done)
+                {
+                    /* 停靠换位后抬臂 → 直接完赛 */
+                    route_state = ROUTE_MISSION_DONE;
+                    ChassisPos_DrawStatus(1, "MISSION DONE");
+                }
+                else
+                {
+                    route_state = ROUTE_HOME_TRACK_ROTATE;
+                    ChassisPos_DrawStatus(1, "Home Rotate");
+                }
+                mode_entry_tick = 0;
+                lcd_div = 0;
+            }
+        }
+    }
+
+    /* 旋转: 车头对准 left_heading_absolute (任务1放置完最后一个物块后的朝向) */
+    if (route_state == ROUTE_HOME_TRACK_ROTATE)
+    {
+        float error;
+        float error_abs;
+        uint32_t frame;
+
+        if (!left_heading_valid || !HWT101_IsReady())
+        {
+            LineFollow_Stop();
+            return;
+        }
+
+        if (++home_return_align_ticks > HOME_RETURN_ALIGN_TIMEOUT)
+        {
+            LineFollow_Stop();
+            ChassisPos_ResetVelocityPid();
+            Move_Control(0, 0, 0, 0);
+            home_return_align_ticks = 0U;
+            home_return_stable_frames = 0U;
+            ChassisPos_DrawStatus(1, "Home Rot Retry");
+            return;
+        }
+
+        frame = HWT101_GetUpdateCount();
+        if (frame == home_return_last_frame) return;
+        home_return_last_frame = frame;
+        error = HeadingHold_WrapAngle180(
+                    left_heading_absolute - HWT101_GetAbsoluteYaw())
+                    * yaw_ccw_sign;
+        error_abs = (error >= 0.0f) ? error : -error;
+
+        if (error_abs <= 2.0f)
+        {
+            LineFollow_Stop();
+            if (++home_return_stable_frames >= HOME_RETURN_ALIGN_STABLE)
+            {
+                ChassisPos_ResetVelocityPid();
+                ChassisPos_ResetEncoder();
+                HWT101_getAngle_Reset();
+                HeadingHold_Reset();
+                home_return_align_ticks = 0U;
+                home_return_stable_frames = 0U;
+                route_state = ROUTE_HOME_TRACK_ARMFLAT;
+                mode_entry_tick = 0;
+                lcd_div = 0;
+                ChassisPos_DrawStatus(1, "Home Flat");
+            }
+        }
+        else
+        {
+            int spd = (error_abs > 15.0f) ? 280
+                    : (error_abs > 6.0f)  ? 220 : 140;
+            home_return_stable_frames = 0U;
+            if (error > 0.0f)
+            {
+                wheel_target[1] = -spd; wheel_target[2] = -spd;
+                wheel_target[3] =  spd; wheel_target[4] =  spd;
+            }
+            else
+            {
+                wheel_target[1] =  spd; wheel_target[2] =  spd;
+                wheel_target[3] = -spd; wheel_target[4] = -spd;
+            }
+        }
+    }
+
+    /* 机械臂放平到平地 Flat 姿态 (巡线姿态) */
+    if (route_state == ROUTE_HOME_TRACK_ARMFLAT)
+    {
+        LineFollow_Stop();
+        {
+            const Task1ArmPose *wf = Task1Mechanism_GetWorkingPose();
+            if (Servo4_ArmRampTick(wf->big_arm_us, wf->small_arm_us))
+            {
+                ChassisPos_ResetVelocityPid();
+                route_state = ROUTE_HOME_TRACK_SEEK;
+                mode_entry_tick = 0;
+                lcd_div = 0;
+                ChassisPos_DrawStatus(1, "Home Seek");
+            }
+        }
+    }
+
+    /* 固定前进 20cm (不做横向移动) → 进入巡线 */
+    if (route_state == ROUTE_HOME_TRACK_SEEK)
+    {
+        if (!pos_control_active)
+        {
+            ChassisPos_Start((int)HOME_TRACK_SEEK_FIXED_DISTANCE,
+                             (int)HOME_TRACK_SEEK_FIXED_DISTANCE,
+                             (int)HOME_TRACK_SEEK_FIXED_DISTANCE,
+                             (int)HOME_TRACK_SEEK_FIXED_DISTANCE);
+        }
+        if (ChassisPos_Update(HOME_TRACK_SEEK_SPEED, 0,
+                              HeadingHold_GetFreshCorrection()))
+        {
+            LineFollow_Stop();
+            ChassisPos_ResetVelocityPid();
+            HeadingHold_Reset();
+            LineFollow_ResetLinePID();
+            last_steer = 0;
+            marker_suppress_ticks = 0;
+            mode_entry_tick = 0;
+            lcd_div = 0;
+            route_state = ROUTE_HOME_TRACK_FOLLOW;
+            LineFollow_LatchSpeeds();
+            ChassisPos_DrawStatus(1, "Home Follow");
+        }
+    }
+
+    /* 巡线回家: 右四路(GS5~8)全黑 → 立即停车 (起始 2s 屏蔽防误停) */
+    if (route_state == ROUTE_HOME_TRACK_FOLLOW)
+    {
+        int i, black_count, line_state = 0, turn_target;
+
+        Sensor_Get();
+        if (marker_suppress_ticks < HOME_TRACK_STOP_SUPPRESS_TICKS)
+        {
+            marker_suppress_ticks++;
+        }
+        else if (GS_state[5] && GS_state[6] && GS_state[7] && GS_state[8])
+        {
+            /* 8.22: 停靠线停车 → 换位停车(停0.5s/前10/右15) → Task0 → 完赛.
+             * 必须重置航向基准: 巡线转弯后 Angle 累积, 不重置则前进/右移
+             * 时 HeadingHold 修正巨大占满轮速 → 车不动卡在 Home Fwd 10 */
+            LineFollow_Stop();
+            ChassisPos_ResetVelocityPid();
+            Move_Control(0, 0, 0, 0);
+            HWT101_getAngle_Reset();
+            HeadingHold_Reset();
+            home_arm0_finish_done = 1U;
+            home_reposition_phase = 0U;
+            mode_entry_tick = 0;
+            lcd_div = 0;
+            route_state = ROUTE_HOME_TRACK_REPOSITION;
+            ChassisPos_DrawStatus(1, "Home Move");
+            return;
+        }
+
+        black_count = GS_state[1] + GS_state[2] + GS_state[3] + GS_state[4]
+                    + GS_state[5] + GS_state[6] + GS_state[7] + GS_state[8];
+        if (black_count == 0)
+            turn_target = last_steer;
+        else
+        {
+            line_state = 0;
+            for (i = 1; i <= 8; i++)
+                if (GS_state[i]) line_state += line_weights[i];
+            turn_target = LineFollow_ComputeLinePID(line_state);
+            last_steer = turn_target;
+        }
+        debug_line_state = line_state;
+        debug_turn_target = turn_target;
+        LineFollow_SetWheelTargets(linefollow_task1_speed_active + turn_target,
+                                   linefollow_task1_speed_active + turn_target,
+                                   linefollow_task1_speed_active - turn_target,
+                                   linefollow_task1_speed_active - turn_target);
+    }
+
+    /* 停靠后换位停车: 停0.5s → 前进15cm → 右移15cm → Task0 → 完赛.
+     * 注意: 本块不能 return! return 会跳过 ISR 末尾 ChassisMotor_ControlTick,
+     * 位置环设置的 wheel_target 不执行到电机 → 车不动 (Home Fwd 10 卡死根因).
+     * phase 0 用 LineFollow_Stop 清零 wheel_target, ControlTick 执行后车停. */
+    if (route_state == ROUTE_HOME_TRACK_REPOSITION)
+    {
+        if (home_reposition_phase == 0U)
+        {
+            LineFollow_Stop();
+            if (++mode_entry_tick >= HOME_REPOSITION_PAUSE_TICKS)
+            {
+                mode_entry_tick = 0;
+                home_reposition_phase = 1U;
+                ChassisPos_DrawStatus(1, "Home Fwd 15");
+            }
+        }
+        else if (home_reposition_phase == 1U)
+        {
+            if (!pos_control_active)
+            {
+                ChassisPos_Start((int)HOME_REPOSITION_FWD_DISTANCE,
+                                 (int)HOME_REPOSITION_FWD_DISTANCE,
+                                 (int)HOME_REPOSITION_FWD_DISTANCE,
+                                 (int)HOME_REPOSITION_FWD_DISTANCE);
+            }
+            if (ChassisPos_Update(HOME_REPOSITION_FWD_SPEED, 0, 0))
+            {
+                ChassisPos_ResetVelocityPid();
+                home_reposition_phase = 2U;
+                ChassisPos_DrawStatus(1, "Home Right 15");
+            }
+        }
+        else
+        {
+            /* phase 2: 右移 15cm (与 TROPHY_LEFT 相反符号), hc=0 */
+            if (!pos_control_active)
+            {
+                ChassisPos_Start((int)HOME_REPOSITION_RIGHT_DISTANCE,
+                                 -(int)HOME_REPOSITION_RIGHT_DISTANCE,
+                                 (int)HOME_REPOSITION_RIGHT_DISTANCE,
+                                 -(int)HOME_REPOSITION_RIGHT_DISTANCE);
+            }
+            if (ChassisPos_Update(0, HOME_REPOSITION_RIGHT_SPEED, 0))
+            {
+                LineFollow_Stop();
+                ChassisPos_ResetVelocityPid();
+                home_reposition_phase = 0U;
+                route_state = ROUTE_HOME_TRACK_ARM0;
+                mode_entry_tick = 0;
+                lcd_div = 0;
+                ChassisPos_DrawStatus(1, "Arm Task0");
+            }
+        }
+    }
+
+    /* 最后回正: 车头旋转对准 home_forward_heading (home区初始正向) */
+    if (route_state == ROUTE_HOME_TRACK_FINAL_FWD)
+    {
+        float error;
+        float error_abs;
+        uint32_t frame;
+
+        if (!home_forward_heading_valid || !HWT101_IsReady())
+        {
+            LineFollow_Stop();
+            return;
+        }
+
+        if (++home_return_align_ticks > HOME_RETURN_ALIGN_TIMEOUT)
+        {
+            LineFollow_Stop();
+            ChassisPos_ResetVelocityPid();
+            Move_Control(0, 0, 0, 0);
+            home_return_align_ticks = 0U;
+            home_return_stable_frames = 0U;
+            ChassisPos_DrawStatus(1, "Fwd Align Retry");
+            return;
+        }
+
+        frame = HWT101_GetUpdateCount();
+        if (frame == home_return_last_frame) return;
+        home_return_last_frame = frame;
+        error = HeadingHold_WrapAngle180(
+                    home_forward_heading - HWT101_GetAbsoluteYaw())
+                    * yaw_ccw_sign;
+        error_abs = (error >= 0.0f) ? error : -error;
+
+        if (error_abs <= 2.0f)
+        {
+            LineFollow_Stop();
+            if (++home_return_stable_frames >= HOME_RETURN_ALIGN_STABLE)
+            {
+                LineFollow_Stop();
+                ChassisPos_ResetVelocityPid();
+                Move_Control(0, 0, 0, 0);
+                route_state = ROUTE_HOME_TRACK_ARM0;
+                mode_entry_tick = 0;
+                lcd_div = 0;
+                ChassisPos_DrawStatus(1, "Arm Task0");
+            }
+        }
+        else
+        {
+            int spd = (error_abs > 15.0f) ? 280
+                    : (error_abs > 6.0f)  ? 220 : 140;
+            home_return_stable_frames = 0U;
+            if (error > 0.0f)
+            {
+                wheel_target[1] = -spd; wheel_target[2] = -spd;
+                wheel_target[3] =  spd; wheel_target[4] =  spd;
+            }
+            else
+            {
+                wheel_target[1] =  spd; wheel_target[2] =  spd;
+                wheel_target[3] = -spd; wheel_target[4] = -spd;
+            }
         }
     }
 

@@ -24,6 +24,7 @@
 #define TROPHY_LITTLE_HALF_OPEN_US 1750U  /* 半开: 解除夹紧力 */
 #define TROPHY_LITTLE_OPEN_US      1450U  /* 全开: 正常释放 */
 #define TROPHY_LITTLE_RELEASE_US   1350U  /* 脱钩: 爪尖完全离开奖杯 */
+#define TROPHY_ROTATION_SAFE_US     900U  /* 任务2转盘安全位 (槽1, 8.22) */
 
 /* ---- 底层驱动 ---- */
 void Servo4_Init(void);

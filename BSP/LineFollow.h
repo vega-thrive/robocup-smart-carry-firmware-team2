@@ -49,7 +49,7 @@
 #define HOME_FIXED_LEFTBACK_FWD_SPEED  240
 #define HOME_FIXED_LEFTBACK_LEFT_SPEED 290
 #define HOME_FIXED_LEFTBACK_BACK_DIST  70300 /* about 3.8 cm backward */
-#define HOME_FIXED_LEFTBACK_LEFT_DIST   9250 /* 5.0 cm × 1850 (8.21 修正标定) */
+#define HOME_FIXED_LEFTBACK_LEFT_DIST  92500 /* 5cm×10 (8.22 用户扩大) */
 #define HOME_FIXED_SETTLE_TICKS       30    /* 150 ms */
 
 /* Fast return after Task2: align to the absolute heading saved in Home,
@@ -61,6 +61,19 @@
 #define HOME_RETURN_MARKER_ARM      37000  /* ignore podium line for first 20 cm */
 #define HOME_RETURN_ALIGN_TIMEOUT     400  /* 2 s at 200 Hz */
 #define HOME_RETURN_ALIGN_STABLE        3  /* fresh gyro frames within 2 deg */
+
+/* ---- 8.22 巡线回家 (放完第3杯后) ----
+ * 原后退 → 机械臂Task0 → 旋转至 left_heading_absolute (任务1放置完朝向)
+ * → 机械臂平地Flat → 固定前进20cm → 巡线 → 右四路(GS5~8)全黑立即停车 */
+#define HOME_TRACK_SEEK_SPEED           300   /* 固定前进速度 */
+#define HOME_TRACK_SEEK_FIXED_DISTANCE  37000  /* 前进 20cm × 1850 */
+#define HOME_TRACK_STOP_SUPPRESS_TICKS  400   /* 巡线开始 2s 内不检测停靠线 */
+/* 8.22 回家停靠后: 编码器直走30cm → 右移15cm → Task0 → 完赛 (让他走起来) */
+#define HOME_REPOSITION_PAUSE_TICKS      100
+#define HOME_REPOSITION_FWD_DISTANCE    59200  /* 32cm × 1850 */
+#define HOME_REPOSITION_FWD_SPEED         250
+#define HOME_REPOSITION_RIGHT_DISTANCE  35150  /* 19cm × 1850 */
+#define HOME_REPOSITION_RIGHT_SPEED       250
 
 /* 回家灰度检测停车 (8.19, 替代编码器定位):
  * 固定速度倒车, 前灰度 8 路全黑事件计数 (上升沿), 每条线计数后 200ms 屏蔽
@@ -103,10 +116,10 @@
 #define TROPHY_BACK_SPEED           300
 #define TROPHY_BACK_DISTANCE      70300  /* 38 cm x 1850 counts/cm (34+4) */
 #define TROPHY_LEFT_SPEED           300
-#define TROPHY_LEFT1_DISTANCE     11100  /* 6cm × 1850 (8.22) */
+#define TROPHY_LEFT1_DISTANCE    124875  /* 45cm×1.5=67.5cm (8.22 增加一半) */
 #define TROPHY_LEFT2_DISTANCE     64750  /* calibrated 3.5 cm lateral travel */
 #define TROPHY_LEFT3_DISTANCE     64750  /* calibrated 3.5 cm lateral travel */
-#define TROPHY_GRAB_FAST_SPEED       280  /* 298 额外降低 */
+#define TROPHY_GRAB_FAST_SPEED       140  /* 8.22 收集巡线降到 140, 不停车防挤奖杯 */
 #define TROPHY_GRAB_SLOW_SPEED       250  /* 当前收集阶段保持统一速度 */
 #define TROPHY_PLACE_SETTLE_TICKS         80  /* 转盘旋转稳定等待 */
 #define TROPHY_ROTATE_SAFE_SETTLE_TICKS   80  /* 转盘回安全位稳定等待 */
@@ -127,7 +140,7 @@
  * Detection arms only after the left move passes TROPHY_DETECT_ARM_COUNTS
  * so a just-grabbed trophy cannot re-trigger on the next phase. */
 #define TROPHY_DETECT_CODE        26U
-#define TROPHY_DETECT_CONFIRM      1U  /* 摄像头绿框已确认，STM32收到首帧26即响应 */
+#define TROPHY_DETECT_CONFIRM      1U  /* 1帧确认 (灵敏度) */
 #define TROPHY_DETECT_COUNT        3U
 #define TROPHY_DETECT_CLEAR_MS   400U
 #define TROPHY_DETECT_ARM_COUNTS 22000U
@@ -179,6 +192,11 @@
 #define TASK1_BACK_CLEAR_SPEED         100
 #define TASK1_PLACE_BACK_FAST_SPEED    300  /* remaining withdrawal after first 1 cm */
 
+/* 放置奖杯时转盘 PWM 减少量 (8.22 实测偏, 槽口对准修正) */
+#define TROPHY_PLACE_PWM_OFFSET   60U
+/* 释放后小退脱离距离 (8.22: 放→退→再夹, 防抬臂时带起奖杯) */
+#define TROPHY_DETACH_BACK_DISTANCE 5550  /* 3cm × 1850 */
+
 /* 放置物块: 视觉对准+直进3cm后, 转盘解锁→旋转到目标槽位→释放→锁定→后退3cm */
 #define PLACE_DEFAULT_COLOR      21U   /* 默认放置颜色码, 后续按需修改 */
 #define PLACE_TURRET_WAIT_TICKS  40    /* 转盘旋转等待 200ms */
@@ -186,9 +204,9 @@
 
 /* 视觉对准完成后: 固定前进插入距离, 按领奖台分别标定.
  * 亚军/冠军/季军手臂高度不同, 相同前进距离落点不同, 必须独立设置. */
-#define TROPHY_INSERT_RUNNER_COUNTS    6013  /* 亚军 3.25cm × 1850 (原6.5cm减半) */
-#define TROPHY_INSERT_CHAMPION_COUNTS  6013  /* 冠军 3.25cm × 1850 (原6.5cm减半) */
-#define TROPHY_INSERT_THIRD_COUNTS     6013  /* 季军 3.25cm × 1850 (原6.5cm减半) */
+#define TROPHY_INSERT_RUNNER_COUNTS    9250  /* 亚军 5cm × 1850 (8.22) */
+#define TROPHY_INSERT_CHAMPION_COUNTS  9250  /* 冠军 5cm × 1850 (8.22) */
+#define TROPHY_INSERT_THIRD_COUNTS     9250  /* 季军 5cm × 1850 (8.22) */
 #define TROPHY_FORWARD_INSERT_SPEED     100
 #define TROPHY_INSERT_SETTLE_TICKS       30  /* 前插到位后稳定 300ms */
 

@@ -7,6 +7,8 @@ static uint16_t turntable_step_pwm_us;
 static uint8_t turntable_next_capture_slot;
 static uint8_t turntable_loaded_count;
 static uint8_t turntable_captured_count;
+static const uint8_t *turntable_capture_order;   /* NULL=默认顺序 0,1,2... */
+static uint8_t  turntable_capture_order_count;
 
 static uint16_t TurntableInventory_CalculatePwm(uint8_t slot_index)
 {
@@ -34,9 +36,18 @@ static uint8_t TurntableInventory_Record(TurntableItemType type,
     TurntableSlot *slot;
     uint8_t index;
 
-    if (turntable_next_capture_slot >= TURNTABLE_SLOT_COUNT) return 0U;
-
-    index = turntable_next_capture_slot;
+    if (turntable_capture_order != NULL)
+    {
+        if (turntable_captured_count >= turntable_capture_order_count)
+            return 0U;
+        index = turntable_capture_order[turntable_captured_count];
+    }
+    else
+    {
+        if (turntable_next_capture_slot >= TURNTABLE_SLOT_COUNT) return 0U;
+        index = turntable_next_capture_slot;
+    }
+    if (index >= TURNTABLE_SLOT_COUNT) return 0U;
     slot = &turntable_slots[index];
     if (slot->valid) return 0U;
 
@@ -76,6 +87,12 @@ void TurntableInventory_Reset(void)
     turntable_next_capture_slot = 0U;
     turntable_loaded_count = 0U;
     turntable_captured_count = 0U;
+}
+
+void TurntableInventory_SetCaptureOrder(const uint8_t *order, uint8_t count)
+{
+    turntable_capture_order = order;
+    turntable_capture_order_count = count;
 }
 
 uint8_t TurntableInventory_RecordColor(uint8_t color_code,

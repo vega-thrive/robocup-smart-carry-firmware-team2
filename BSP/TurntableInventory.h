@@ -39,6 +39,10 @@ typedef struct
 void TurntableInventory_Init(uint16_t home_pwm_us, uint16_t step_pwm_us);
 void TurntableInventory_Reset(void);
 
+/* 8.22: 覆盖默认顺序槽位 (0,1,2,...) 为指定槽位序列, 用于任务2收集
+ * 奖杯 (硬件原因只用槽1/3/4). order 必须指向静态存储. */
+void TurntableInventory_SetCaptureOrder(const uint8_t *order, uint8_t count);
+
 /* Record an item in the current sequential capture slot.  On success,
  * slot_index receives the slot that was at the collection entrance. */
 uint8_t TurntableInventory_RecordColor(uint8_t color_code,
